@@ -1,46 +1,149 @@
-5import telebot from telebot import types from flask import Flask import threading import time
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler import random, logging, time from datetime import datetime, timedelta
 
-TOKEN = '7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk' bot = telebot.TeleBot(TOKEN) app = Flask(name)
+--- Bot Token ---
 
-users = {} chats = {} searching = set() referrals = {} gender_unlock_time = {}
+TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk"
 
-countries = [ 'India', 'USA', 'UK', 'Canada', 'Australia', 'Germany', 'France', 'Italy', 'Spain', 'Saudi Arabia', 'UAE', 'Iran', 'Iraq', 'Thailand', 'Vietnam', 'Philippines', 'Nigeria', 'South Africa', 'Kenya', 'Colombia', 'Argentina' ]
+--- Enable logging ---
 
-def main_keyboard(user_id): markup = types.ReplyKeyboardMarkup(resize_keyboard=True) markup.row('🔍 Find a Partner') if referrals.get(user_id, 0) >= 5 and time.time() < gender_unlock_time.get(user_id, 0): markup.row('🎯 Search by Gender') return markup
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO) logger = logging.getLogger(name)
 
-def start_setup(message): chat_id = message.chat.id users[chat_id] = {} country_markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True) for i in range(0, len(countries), 2): row = countries[i:i+2] country_markup.row(*row) bot.send_message(chat_id, "Select your country:", reply_markup=country_markup)
+--- States ---
 
-@bot.message_handler(commands=['start']) def start_command(message): start_setup(message)
+SELECT_COUNTRY, SELECT_AGE, SELECT_GENDER, CHATTING = range(4)
 
-@bot.message_handler(func=lambda m: 'country' not in users.get(m.chat.id, {})) def set_country(message): users[message.chat.id]['country'] = message.text age_markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True) age_markup.row('14-17', '18-24') age_markup.row('25-35', '36-50') bot.send_message(message.chat.id, "Select your age group:", reply_markup=age_markup)
+--- Data Storage ---
 
-@bot.message_handler(func=lambda m: 'age' not in users.get(m.chat.id, {})) def set_age(message): users[message.chat.id]['age'] = message.text gender_markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True) gender_markup.row('Male', 'Female') bot.send_message(message.chat.id, "Select your gender:", reply_markup=gender_markup)
+users = {} pending_users = [] active_chats = {} referrals = {} referral_times = {}
 
-@bot.message_handler(func=lambda m: 'gender' not in users.get(m.chat.id, {})) def set_gender(message): users[message.chat.id]['gender'] = message.text bot.send_message(message.chat.id, "✅ Setup complete!", reply_markup=main_keyboard(message.chat.id))
+--- Popular Countries ---
 
-@bot.message_handler(func=lambda m: m.text == '🔍 Find a Partner') def find_partner(message): user_id = message.chat.id if user_id in chats: bot.send_message(user_id, "❗You're already in a chat. Type /disconnect to leave it.") return for other_id in searching: if other_id != user_id: chats[user_id] = other_id chats[other_id] = user_id searching.remove(other_id) bot.send_message(user_id, "✅ Partner found! Say hi!") bot.send_message(other_id, "✅ Partner found! Say hi!") return searching.add(user_id) bot.send_message(user_id, "🔍 Searching for a partner... Please wait.")
+popular_countries = [ "India", "USA", "UK", "Canada", "Australia", "Spain", "Saudi Arabia", "UAE", "Iran", "Iraq", "Thailand", "Vietnam", "Philippines", "Nigeria", "South Africa", "Kenya", "Colombia", "Argentina" ]
 
-@bot.message_handler(func=lambda m: m.text == '🎯 Search by Gender') def gender_search(message): user_id = message.chat.id if referrals.get(user_id, 0) < 5 or time.time() > gender_unlock_time.get(user_id, 0): bot.send_message(user_id, "🔒 Unlock gender search by inviting 5 friends! You'll get access for 1 hour.") return gender_markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True) gender_markup.row('Male', 'Female') bot.send_message(user_id, "Choose gender you want to chat with:", reply_markup=gender_markup)
+--- Genders ---
 
-@bot.message_handler(commands=['disconnect']) def disconnect(message): user_id = message.chat.id if user_id in chats: partner_id = chats[user_id] del chats[user_id] del chats[partner_id] bot.send_message(user_id, "❗Your partner has left the chat.", reply_markup=main_keyboard(user_id)) bot.send_message(partner_id, "❗Your partner has left the chat.", reply_markup=main_keyboard(partner_id)) else: bot.send_message(user_id, "⚠️ You're not in a chat.")
+genders = ["Male", "Female"]
 
-@bot.message_handler(commands=['help']) def help_command(message): help_text = ( "🆘 Help Menu\n" "/start - Begin using the bot\n" "/connect - Find a partner\n" "/disconnect - Leave chat\n" "/profile - View or update your profile\n" "/referral - Get your referral link\n" "/help - View this help message\n\n" "👍 After chat ends, rate your experience\n" "💬 Use anonymous confessions and icebreakers\n" "🧠 Personality tags match you better" ) bot.send_message(message.chat.id, help_text, parse_mode='Markdown')
+--- Start Command ---
 
-@bot.message_handler(commands=['referral']) def referral_command(message): ref_link = f"https://t.me/TheSecretMeet_bot?start={message.chat.id}" bot.send_message(message.chat.id, f"🔗 Invite friends using this link: {ref_link}\nInvite 5 friends to unlock gender search for 1 hour!")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE): user_id = update.effective_user.id users[user_id] = {} keyboard = [[InlineKeyboardButton(c, callback_data=c)] for c in popular_countries] await update.message.reply_text("🌍 Select your country:", reply_markup=InlineKeyboardMarkup(keyboard)) return SELECT_COUNTRY
 
-@bot.message_handler(commands=['connect']) def connect_command(message): find_partner(message)
+--- Country Selection ---
 
-@bot.message_handler(commands=['profile']) def profile_command(message): u = users.get(message.chat.id, {}) profile = f"🌍 Country: {u.get('country', '-') }\n🎂 Age: {u.get('age', '-') }\n🚻 Gender: {u.get('gender', '-') }" bot.send_message(message.chat.id, profile)
+async def country_select(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.callback_query await query.answer() country = query.data user_id = query.from_user.id users[user_id]['country'] = country keyboard = [[InlineKeyboardButton(str(age), callback_data=str(age))] for age in range(14, 51)] await query.edit_message_text("🎂 Select your age:", reply_markup=InlineKeyboardMarkup(keyboard)) return SELECT_AGE
 
-@bot.message_handler(func=lambda m: True) def relay_messages(message): sender = message.chat.id if sender in chats: bot.send_chat_action(chats[sender], 'typing') bot.send_message(chats[sender], message.text)
+--- Age Selection ---
 
-Flask for Replit or web hosting
+async def age_select(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.callback_query await query.answer() age = query.data user_id = query.from_user.id users[user_id]['age'] = age keyboard = [[InlineKeyboardButton(g, callback_data=g)] for g in genders] await query.edit_message_text("👫 Select your gender:", reply_markup=InlineKeyboardMarkup(keyboard)) return SELECT_GENDER
 
-@app.route('/') def home(): return "Bot is running."
+--- Gender Selection ---
 
-def run(): app.run(host='0.0.0.0', port=8080)
+async def gender_select(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.callback_query await query.answer() gender = query.data user_id = query.from_user.id users[user_id]['gender'] = gender
 
-def keep_alive(): thread = threading.Thread(target=run) thread.start()
+buttons = [[
+    InlineKeyboardButton("🔍 Find a Partner", callback_data="find_partner")
+]]
 
-keep_alive() bot.infinity_polling()
+# Gender search button logic
+if referrals.get(user_id, 0) >= 5:
+    expiry = referral_times.get(user_id, datetime.min)
+    if datetime.now() < expiry:
+        buttons.append([InlineKeyboardButton("🎯 Search by Gender", callback_data="search_by_gender")])
+
+await query.edit_message_text("✅ Setup complete!", reply_markup=InlineKeyboardMarkup(buttons))
+return ConversationHandler.END
+
+--- Find Partner Button ---
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.callback_query user_id = query.from_user.id
+
+if query.data == "find_partner":
+    await query.answer()
+    await query.edit_message_text("⏳ Searching for a partner...")
+    await find_partner(user_id, context)
+
+elif query.data == "search_by_gender":
+    await query.answer()
+    await context.bot.send_message(user_id, "🎯 Send the gender you want to search (Male/Female):")
+    context.user_data['gender_search'] = True
+
+--- Search Partner Logic ---
+
+async def find_partner(user_id, context): if user_id in pending_users: return pending_users.append(user_id) for other_id in pending_users: if other_id != user_id and other_id not in active_chats: pending_users.remove(user_id) pending_users.remove(other_id) active_chats[user_id] = other_id active_chats[other_id] = user_id await context.bot.send_message(user_id, "🔗 You're now connected! Say hi! ✨") await context.bot.send_message(other_id, "🔗 You're now connected! Say hi! ✨") return await context.bot.send_message(user_id, "Still searching...")
+
+--- Disconnect Command ---
+
+async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE): user_id = update.effective_user.id partner_id = active_chats.pop(user_id, None) if partner_id: active_chats.pop(partner_id, None) await context.bot.send_message(partner_id, "❗Your partner has left the chat.") await update.message.reply_text("You have left the chat.")
+
+--- Message Forwarding ---
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE): user_id = update.effective_user.id text = update.message.text
+
+# Gender search input handling
+if context.user_data.get('gender_search'):
+    if text in genders:
+        context.user_data.pop('gender_search')
+        await update.message.reply_text(f"Searching for a {text} partner...")
+        # (Search logic by gender can be placed here)
+    else:
+        await update.message.reply_text("❌ Invalid gender. Type Male or Female.")
+    return
+
+if user_id in active_chats:
+    partner_id = active_chats[user_id]
+    await context.bot.send_chat_action(partner_id, "typing")
+    await context.bot.send_message(partner_id, text)
+else:
+    await update.message.reply_text("❌ You're not in a chat. Click '🔍 Find a Partner' to connect.")
+
+--- Help Command ---
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text(""" 🛠 Available Commands: /start – Begin setup /connect – Find a partner /disconnect – Leave current chat /profile – View your info /help – Show this menu /referral – Invite friends to unlock gender search
+
+💡 Features:
+
+Anonymous Matching
+
+Typing Simulation
+
+Icebreaker Prompts (Coming Soon)
+
+Safe Chat Filter
+
+Secret Room Codes
+
+Feedback after each chat
+
+Gender Search unlockable by referral """)
+
+
+--- Referral Command ---
+
+async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE): user_id = update.effective_user.id referrals[user_id] = referrals.get(user_id, 0) + 1 referral_times[user_id] = datetime.now() + timedelta(hours=1) await update.message.reply_text("✅ Referral added! Gender search unlocked for 1 hour.")
+
+--- Main Function ---
+
+if name == 'main': app = Application.builder().token(TOKEN).build()
+
+conv_handler = ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={
+        SELECT_COUNTRY: [CallbackQueryHandler(country_select)],
+        SELECT_AGE: [CallbackQueryHandler(age_select)],
+        SELECT_GENDER: [CallbackQueryHandler(gender_select)],
+    },
+    fallbacks=[]
+)
+
+app.add_handler(conv_handler)
+app.add_handler(CallbackQueryHandler(button_handler))
+app.add_handler(CommandHandler("disconnect", disconnect))
+app.add_handler(CommandHandler("help", help_command))
+app.add_handler(CommandHandler("referral", referral))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+
+print("✅ Bot is running...")
+app.run_polling()
+
+
 
