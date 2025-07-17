@@ -1,144 +1,46 @@
-from flask import Flask
-from threading import Thread
-import time
-import telebot
-from telebot import types
+5import telebot from telebot import types from flask import Flask import threading import time
 
-BOT_TOKEN = BOT_TOKEN = 
-"7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk"
-bot = telebot.TeleBot(BOT_TOKEN)
-app = Flask('')
-@app.route('/')
-def home():
-    return "Bot is running!"
-def run():
-    app.run(host='0.0.0.0', port=8080)
-def keep_alive():
-    Thread(target=run).start()
-keep_alive()
-connected_users = {}
-user_data = {}
-referrals = {}
-gender_unlock_time = {}
-def country_keyboard():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
-    countries = [
-        "🇮🇳 India", "🇺🇸 USA", "🇬🇧 UK", "🇪🇸 Spain", "🇸🇦 Saudi Arabia", "🇦🇪 UAE", "🇮🇷 Iran",
-        "🇮🇶 Iraq", "🇹🇭 Thailand", "🇻🇳 Vietnam", "🇵🇭 Philippines", "🇳🇬 Nigeria", "🇿🇦 South Africa",
-        "🇰🇪 Kenya", "🇨🇴 Colombia", "🇦🇷 Argentina", "🇸🇬 Singapore", "🇮🇩 Indonesia", "🇲🇾 Malaysia"
-    ]
-    for i in range(0, len(countries), 3):
-        markup.add(*countries[i:i+3])
-    return markup
-def age_keyboard():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=5)
-    for i in range(14, 51, 5):
-        markup.add(*[str(x) for x in range(i, min(i + 5, 51))])
-    return markup
-def gender_keyboard():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("♂️ Male", "♀️ Female")
-    return markup
-def main_menu(user_id):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row("🔍 Find a Partner")
-    if can_search_by_gender(user_id):
-        markup.row("🎯 Search by Gender")
-    else:
-        markup.row("🔒 Search by Gender (Invite 3)")
-    return markup
-def can_search_by_gender(user_id):
-    if user_id in gender_unlock_time:
-        return time.time() - gender_unlock_time[user_id] <= 3600
-    return False
-@bot.message_handler(commands=['start'])
-def start(message):
-    user_id = message.chat.id
-    user_data[user_id] = {}
-    bot.send_message(user_id, "🌍 Select your country:", reply_markup=country_keyboard())
-@bot.message_handler(func=lambda m: m.chat.id in user_data and 'country' not in user_data[m.chat.id])
-def set_country(message):
-    user_data[message.chat.id]['country'] = message.text
-    bot.send_message(message.chat.id, "🎂 Select your age:", reply_markup=age_keyboard())
-@bot.message_handler(func=lambda m: m.chat.id in user_data and 'age' not in user_data[m.chat.id])
-def set_age(message):
-    if message.text.isdigit() and 14 <= int(message.text) <= 50:
-        user_data[message.chat.id]['age'] = int(message.text)
-        bot.send_message(message.chat.id, "👤 Select your gender:", reply_markup=gender_keyboard())
-    else:
-        bot.send_message(message.chat.id, "❗ Age must be between 14 and 50.")
-@bot.message_handler(func=lambda m: m.chat.id in user_data and 'gender' not in user_data[m.chat.id])
-def set_gender(message):
-    if message.text in ["♂️ Male", "♀️ Female"]:
-        user_data[message.chat.id]['gender'] = message.text
-        bot.send_message(message.chat.id, "✅ Setup complete! Use the buttons below to start chatting.",
-                         reply_markup=main_menu(message.chat.id))
-    else:
-        bot.send_message(message.chat.id, "❗ Please select Male or Female.")
-@bot.message_handler(commands=['profile'])
-def profile(message):
-    user_id = message.chat.id
-    data = user_data.get(user_id)
-    if data:
-        profile_text = f"🌍 Country: {data.get('country')}\n🎂 Age: {data.get('age')}\n👤 Gender: {data.get('gender')}"
-        bot.send_message(user_id, profile_text + "\n\nWant to edit? Send /start again.")
-    else:
-        bot.send_message(user_id, "❗ Please complete your profile using /start.")
-@bot.message_handler(commands=['help'])
-def help_cmd(message):
-    bot.send_message(message.chat.id, """
-🤖 *SecretMeet Bot Commands*
-/connect – Find a random partner
-/disconnect – Leave the chat
-/profile – View your info
-/help – Show this message
-🎯 Search by Gender is unlocked for 1 hour after inviting 3 users.
-""", parse_mode='Markdown')
-@bot.message_handler(commands=['connect'])
-def connect(message):
-    user_id = message.chat.id
-    if user_id in connected_users:
-        bot.send_message(user_id, "⚠️ You're already connected. Use /disconnect first.")
-        return
-    for other_id in connected_users:
-        if connected_users[other_id] is None and other_id != user_id:
-            connected_users[other_id] = user_id
-            connected_users[user_id] = other_id
-            bot.send_message(user_id, "🎉 Partner found! Say hi 👋")
-            bot.send_chat_action(user_id, 'typing')
-            bot.send_chat_action(other_id, 'typing')
-            bot.send_message(other_id, "🎉 Partner found! Say hi 👋")
-            return
-    connected_users[user_id] = None
-    bot.send_message(user_id, "⏳ Waiting for someone to connect...")
-@bot.message_handler(commands=['disconnect'])
-def disconnect(message):
-    user_id = message.chat.id
-    if user_id in connected_users:
-        partner = connected_users[user_id]
-        if partner:
-            bot.send_message(partner, "❗Your partner has left the chat.")
-            connected_users[partner] = None
-        del connected_users[user_id]
-        bot.send_message(user_id, "❌ You have left the chat.")
-    else:
-        bot.send_message(user_id, "⚠️ You're not in a chat.")
-@bot.message_handler(func=lambda m: True)
-def chat(message):
-    user_id = message.chat.id
-    if user_id in connected_users and connected_users[user_id]:
-        partner = connected_users[user_id]
-        bot.send_chat_action(partner, 'typing')
-        bot.send_message(partner, message.text)
-    elif user_id in connected_users:
-        bot.send_message(user_id, "⏳ Still waiting for a partner...")
-    elif message.text == "🔍 Find a Partner":
-        connect(message)
-    elif message.text.startswith("🎯"):
-        if can_search_by_gender(user_id):
-            bot.send_message(user_id, "🎯 Gender search coming soon...")
-        else:
-            bot.send_message(user_id, "🔒 Feature locked. Invite 3 users to unlock.")
-    else:
-        bot.send_message(user_id, "ℹ️ Use /connect to start chatting.")
-bot.infinity_polling()
+TOKEN = '7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk' bot = telebot.TeleBot(TOKEN) app = Flask(name)
+
+users = {} chats = {} searching = set() referrals = {} gender_unlock_time = {}
+
+countries = [ 'India', 'USA', 'UK', 'Canada', 'Australia', 'Germany', 'France', 'Italy', 'Spain', 'Saudi Arabia', 'UAE', 'Iran', 'Iraq', 'Thailand', 'Vietnam', 'Philippines', 'Nigeria', 'South Africa', 'Kenya', 'Colombia', 'Argentina' ]
+
+def main_keyboard(user_id): markup = types.ReplyKeyboardMarkup(resize_keyboard=True) markup.row('🔍 Find a Partner') if referrals.get(user_id, 0) >= 5 and time.time() < gender_unlock_time.get(user_id, 0): markup.row('🎯 Search by Gender') return markup
+
+def start_setup(message): chat_id = message.chat.id users[chat_id] = {} country_markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True) for i in range(0, len(countries), 2): row = countries[i:i+2] country_markup.row(*row) bot.send_message(chat_id, "Select your country:", reply_markup=country_markup)
+
+@bot.message_handler(commands=['start']) def start_command(message): start_setup(message)
+
+@bot.message_handler(func=lambda m: 'country' not in users.get(m.chat.id, {})) def set_country(message): users[message.chat.id]['country'] = message.text age_markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True) age_markup.row('14-17', '18-24') age_markup.row('25-35', '36-50') bot.send_message(message.chat.id, "Select your age group:", reply_markup=age_markup)
+
+@bot.message_handler(func=lambda m: 'age' not in users.get(m.chat.id, {})) def set_age(message): users[message.chat.id]['age'] = message.text gender_markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True) gender_markup.row('Male', 'Female') bot.send_message(message.chat.id, "Select your gender:", reply_markup=gender_markup)
+
+@bot.message_handler(func=lambda m: 'gender' not in users.get(m.chat.id, {})) def set_gender(message): users[message.chat.id]['gender'] = message.text bot.send_message(message.chat.id, "✅ Setup complete!", reply_markup=main_keyboard(message.chat.id))
+
+@bot.message_handler(func=lambda m: m.text == '🔍 Find a Partner') def find_partner(message): user_id = message.chat.id if user_id in chats: bot.send_message(user_id, "❗You're already in a chat. Type /disconnect to leave it.") return for other_id in searching: if other_id != user_id: chats[user_id] = other_id chats[other_id] = user_id searching.remove(other_id) bot.send_message(user_id, "✅ Partner found! Say hi!") bot.send_message(other_id, "✅ Partner found! Say hi!") return searching.add(user_id) bot.send_message(user_id, "🔍 Searching for a partner... Please wait.")
+
+@bot.message_handler(func=lambda m: m.text == '🎯 Search by Gender') def gender_search(message): user_id = message.chat.id if referrals.get(user_id, 0) < 5 or time.time() > gender_unlock_time.get(user_id, 0): bot.send_message(user_id, "🔒 Unlock gender search by inviting 5 friends! You'll get access for 1 hour.") return gender_markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True) gender_markup.row('Male', 'Female') bot.send_message(user_id, "Choose gender you want to chat with:", reply_markup=gender_markup)
+
+@bot.message_handler(commands=['disconnect']) def disconnect(message): user_id = message.chat.id if user_id in chats: partner_id = chats[user_id] del chats[user_id] del chats[partner_id] bot.send_message(user_id, "❗Your partner has left the chat.", reply_markup=main_keyboard(user_id)) bot.send_message(partner_id, "❗Your partner has left the chat.", reply_markup=main_keyboard(partner_id)) else: bot.send_message(user_id, "⚠️ You're not in a chat.")
+
+@bot.message_handler(commands=['help']) def help_command(message): help_text = ( "🆘 Help Menu\n" "/start - Begin using the bot\n" "/connect - Find a partner\n" "/disconnect - Leave chat\n" "/profile - View or update your profile\n" "/referral - Get your referral link\n" "/help - View this help message\n\n" "👍 After chat ends, rate your experience\n" "💬 Use anonymous confessions and icebreakers\n" "🧠 Personality tags match you better" ) bot.send_message(message.chat.id, help_text, parse_mode='Markdown')
+
+@bot.message_handler(commands=['referral']) def referral_command(message): ref_link = f"https://t.me/TheSecretMeet_bot?start={message.chat.id}" bot.send_message(message.chat.id, f"🔗 Invite friends using this link: {ref_link}\nInvite 5 friends to unlock gender search for 1 hour!")
+
+@bot.message_handler(commands=['connect']) def connect_command(message): find_partner(message)
+
+@bot.message_handler(commands=['profile']) def profile_command(message): u = users.get(message.chat.id, {}) profile = f"🌍 Country: {u.get('country', '-') }\n🎂 Age: {u.get('age', '-') }\n🚻 Gender: {u.get('gender', '-') }" bot.send_message(message.chat.id, profile)
+
+@bot.message_handler(func=lambda m: True) def relay_messages(message): sender = message.chat.id if sender in chats: bot.send_chat_action(chats[sender], 'typing') bot.send_message(chats[sender], message.text)
+
+Flask for Replit or web hosting
+
+@app.route('/') def home(): return "Bot is running."
+
+def run(): app.run(host='0.0.0.0', port=8080)
+
+def keep_alive(): thread = threading.Thread(target=run) thread.start()
+
+keep_alive() bot.infinity_polling()
+
