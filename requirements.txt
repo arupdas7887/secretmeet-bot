@@ -1,2 +1,2 @@
 flask
-pyTelegramBotAPI
+python-telegram-bot==20.5
