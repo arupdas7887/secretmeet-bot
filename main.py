@@ -7,7 +7,7 @@ from itertools import islice
 import logging
 
 # ===== CONFIGURATION =====
-TOKEN = "7673817380 AAH8NKM1A3kJzB9HVdWB1rkTIaMBeol6Nyk"
+TOKEN = "7673817380 : AAH8NKM1A3kJzB9HVdWB1rkTIaMBeol6Nyk"
 ADMIN_ID = "t.me/TheSecretMeet_bot"
 
 # Complete country list with flags (200+ countries)
