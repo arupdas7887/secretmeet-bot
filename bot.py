@@ -1,7 +1,7 @@
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-BOT_TOKEN = "7673817380: AAH8NKM1A3kJzB9HVdWB1rkTIaMBeol6Nyk""
+BOT_TOKEN = "7673817380: AAH8NKM1A3kJzB9HVdWB1rkTIaMBeol6Nyk"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Hello! I'm alive on Render!")
