@@ -1,7 +1,8 @@
 services:
   - type: web
-    name: telegram-bot
+    name: secretmeet-bot
     env: python
     plan: free
-    buildCommand: ""
-    startCommand: python bot.py
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot.py"
+    pythonVersion: 3.10
