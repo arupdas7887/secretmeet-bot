@@ -20,8 +20,8 @@ from telegram.ext import (
 # Configuration
 # For Render deployment, these should ideally be set as environment variables.
 # But for simplicity, we're keeping them hardcoded as per previous instructions.
-BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk"# REPLACE WITH YOUR ACTUAL BOT TOKEN
-DATABASE_URL = "postgresql://secret_meet_bot_user:i3Dqcwcwyvn5zbIspVQvtlRTiqnMKLDI@dpg-d22d64h5pdvs738ri6i0-a.oregon-postgres.render.com/secret_meet_bot" # REPLACE WITH YOUR ACTUAL DATABASE URL
+BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk"  # REPLACE WITH YOUR ACTUAL BOT TOKEN
+DATABASE_URL = "postgresql://secret_meet_bot_user:i3Dqcwcwyvn5zbIspVQvtlRTiqnMKLDI@dpg-d22d64h5pdvs738ri6i0-a.oregon-postgres.render.com/secret_meet_bot" # CORRECTED DATABASE URL
 
 # Enable logging
 logging.basicConfig(
@@ -437,7 +437,7 @@ async def post_init_callback(application: Application) -> None:
 
 
 # Add a shutdown hook for the database pool
-async def pre_shutdown_callback(application: Application) -> None:
+async def post_shutdown_callback(application: Application) -> None: # Renamed from pre_shutdown_callback
     logger.info("Bot application shutting down. Closing database pool.")
     await close_db()
 
@@ -445,7 +445,7 @@ def main() -> None:
     """Start the bot."""
     webhook_url = os.getenv("WEBHOOK_URL")
 
-    application = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init_callback).pre_shutdown(pre_shutdown_callback).build()
+    application = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init_callback).post_shutdown(post_shutdown_callback).build() # Changed pre_shutdown to post_shutdown
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
