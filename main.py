@@ -1,3 +1,9 @@
+import asyncio
+import logging
+import os
+import uuid
+from datetime import datetime
+
 import asyncpg
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -491,5 +497,6 @@ def main() -> None:
     else:
         logger.info("Running with Polling (WEBHOOK_URL not set).")
         application.run_polling(poll_interval=3)
+
 if __name__ == "__main__":
     main()
