@@ -2,7 +2,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime
-import os # <--- ADDED THIS LINE
+import os
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -18,8 +18,6 @@ from telegram.ext import (
 
 # Configuration
 BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk"
-# DATABASE_URL is no longer used for in-memory storage
-# DATABASE_URL = "postgresql://secret_meet_bot_user:i3Dqcwcwyvn5zbIspVQvtlRTiqnMKLDI@dpg-d22d64h5pdvs738ri6i0-a.oregon-postgres.render.com/secret_meet_bot"
 
 # Enable logging
 logging.basicConfig(
@@ -169,7 +167,7 @@ async def end_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=reply_markup,
     )
 
-async def send_match_found_message(user1_id, user2_id, context: ContextTypes.DEFAULT_TYPE):
+async def send_match_found_message(user1_id, user2_id, application_bot): # Changed context.bot to application_bot for clarity
     match_id = uuid.uuid4()
     
     # Update users in in-memory store
@@ -187,8 +185,9 @@ async def send_match_found_message(user1_id, user2_id, context: ContextTypes.DEF
     )
 
     try:
-        await context.bot.send_message(chat_id=user1_id, text=match_info_msg)
-        await context.bot.send_message(chat_id=user2_id, text=match_info_msg)
+        # Corrected: Use application_bot instead of context.bot directly
+        await application_bot.send_message(chat_id=user1_id, text=match_info_msg) 
+        await application_bot.send_message(chat_id=user2_id, text=match_info_msg)
         logger.info(f"Match {match_id} found between {user1_id} and {user2_id}.")
     except Exception as e:
         logger.error(f"Error sending match found message: {e}")
@@ -220,6 +219,7 @@ async def matching_scheduler(application: Application):
             user1 = users_in_search[0]
             user2 = users_in_search[1]
             
+            # Pass application.bot directly to the function
             await send_match_found_message(user1['user_id'], user2['user_id'], application.bot)
 
         else:
@@ -259,13 +259,11 @@ async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def post_init_callback(application: Application) -> None:
     logger.info("Running post_init_callback (no database init).")
-    # No database initialization needed for in-memory store
     application.bot_data['matching_scheduler_task'] = application.create_task(matching_scheduler(application))
     logger.info("post_init_callback finished.")
 
 async def post_shutdown_callback(application: Application) -> None:
     logger.info("Bot application shutting down (no database close).")
-    # No database closing needed for in-memory store
     pass # No action needed for in-memory store shutdown
 
 def main() -> None:
@@ -273,10 +271,9 @@ def main() -> None:
 
     application = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init_callback).post_shutdown(post_shutdown_callback).build()
 
-    # Conversation handler is simplified, as no profile setup states
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
-        states={}, # No specific states as profile setup is removed
+        states={},
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
     )
