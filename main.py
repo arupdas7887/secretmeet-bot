@@ -48,7 +48,7 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
                 username TEXT,
-                full_name TEXT,
+                full_name TEXT,  -- ADDED THIS LINE
                 country TEXT,
                 age INT,
                 gender TEXT,
@@ -445,7 +445,7 @@ def main() -> None:
     """Start the bot."""
     webhook_url = os.getenv("WEBHOOK_URL")
 
-    application = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init_callback).post_shutdown(post_shutdown_callback).build() # Changed pre_shutdown to post_shutdown
+    application = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init_callback).post_shutdown(post_shutdown_callback).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
