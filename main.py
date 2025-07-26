@@ -4,7 +4,6 @@ import uuid
 from datetime import datetime
 import os
 
-# --- MODIFIED: Import ChatAction from telegram.constants ---
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.constants import ChatAction 
 from telegram.ext import (
@@ -31,8 +30,9 @@ logger = logging.getLogger(__name__)
 # In-memory storage for user data
 user_data_store = {}
 
-# Conversation states for general feedback
+# Conversation states
 FEEDBACK_MESSAGE = 1
+REPORT_REASON_SELECTION = 2 # New state for selecting report reasons
 
 # User Data Operations (simulated with in-memory dict)
 async def get_user(user_id: int):
@@ -179,7 +179,7 @@ async def handle_chat_feedback(update: Update, context: ContextTypes.DEFAULT_TYP
         reply_markup=get_command_reply_keyboard()
     )
 
-async def chat_feedback_report_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def chat_feedback_report_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the chat reporting process by showing reasons."""
     query = update.callback_query
     await query.answer()
@@ -188,6 +188,7 @@ async def chat_feedback_report_start(update: Update, context: ContextTypes.DEFAU
         "Choose a reason for your report:",
         reply_markup=get_report_reasons_keyboard()
     )
+    return REPORT_REASON_SELECTION # Transition to the new state
 
 async def handle_specific_report_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handles the selection of a specific report reason and sends it anonymously."""
@@ -222,46 +223,74 @@ async def handle_specific_report_reason(update: Update, context: ContextTypes.DE
         )
         return ConversationHandler.END
 
+async def end_chat_for_users(user1_id: int, user2_id: int, application_bot: Application, initiator_id: int = None) -> None:
+    """Ends the chat for both users and offers feedback.
+    initiator_id: The ID of the user who explicitly stopped the chat, if any."""
+    
+    if initiator_id: # The one who explicitly stopped
+        initiator_text = "You have stopped the chat. You are now out of the queue."
+        partner_text = "Your partner has stopped the chat 😔\nUse the buttons below to find a new partner."
+    else: # If chat ended for other reasons (e.g., disconnection, error, or not explicitly stopped)
+        initiator_text = "Your chat has ended. You are now out of the queue."
+        partner_text = "Your chat has ended. You are now out of the queue."
+
+    # Clear match status for both users
+    for user_id in [user1_id, user2_id]:
+        if user_id in user_data_store:
+            user_data_store[user_id]['in_search'] = False
+            user_data_store[user_id]['match_id'] = None
+            user_data_store[user_id]['last_active'] = datetime.now()
+
+    try:
+        # Send distinct messages based on initiator
+        if initiator_id == user1_id:
+            await application_bot.send_message(chat_id=user1_id, text=initiator_text)
+            await application_bot.send_message(chat_id=user2_id, text=partner_text)
+        elif initiator_id == user2_id:
+            await application_bot.send_message(chat_id=user2_id, text=initiator_text)
+            await application_bot.send_message(chat_id=user1_id, text=partner_text)
+        else: # No specific initiator (e.g., error in forwarding)
+            await application_bot.send_message(chat_id=user1_id, text=initiator_text)
+            await application_bot.send_message(chat_id=user2_id, text=partner_text)
+
+        # Send feedback option to BOTH users
+        feedback_msg = "If you wish, leave your feedback about your partner. It will help us find better partners for you in the future."
+        await application_bot.send_message(
+            chat_id=user1_id,
+            text=feedback_msg,
+            reply_markup=get_post_chat_feedback_keyboard()
+        )
+        await application_bot.send_message(
+            chat_id=user2_id,
+            text=feedback_msg,
+            reply_markup=get_post_chat_feedback_keyboard()
+        )
+        logger.info(f"Chat ended for {user1_id} and {user2_id}. Feedback offered.")
+
+    except Exception as e:
+        logger.error(f"Error ending chat or offering feedback for {user1_id}, {user2_id}: {e}")
+
 async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Ends the current chat and offers post-chat feedback."""
+    """Ends the current chat and offers post-chat feedback to both participants."""
     user_id = update.effective_user.id
     user_data = await get_user(user_id)
 
     if user_data and user_data['match_id']:
         match_id = user_data['match_id']
-        
         partner_id = None
         for uid, udata in user_data_store.items():
             if udata.get('match_id') == match_id and uid != user_id:
                 partner_id = uid
-                try:
-                    await context.bot.send_message(chat_id=partner_id, text="Your partner has stopped the chat 😔\nUse the buttons below to find a new partner.")
-                except Exception as e:
-                    logger.warning(f"Could not notify partner {partner_id} about chat end: {e}")
                 break
         
-        # Clear match status for both users
-        for uid, udata in user_data_store.items():
-            if udata.get('match_id') == match_id:
-                udata['in_search'] = False
-                udata['match_id'] = None
-                udata['last_active'] = datetime.now()
-
-        await update.message.reply_text("You have stopped the chat. You are now out of the queue.")
-        logger.info(f"Chat {match_id} stopped by user {user_id}.")
-        
-        # Offer post-chat feedback
-        await update.message.reply_text(
-            "If you wish, leave your feedback about your partner. It will help us find better partners for you in the future.",
-            reply_markup=get_post_chat_feedback_keyboard()
-        )
+        if partner_id:
+            await end_chat_for_users(user_id, partner_id, context.application, initiator_id=user_id)
+            logger.info(f"Chat {match_id} stopped by user {user_id}.")
+        else: # User was in a match but partner not found (shouldn't happen often)
+            await remove_user_from_search(user_id)
+            await update.message.reply_text("You are not currently in a chat. Use the buttons below to find a partner.", reply_markup=get_command_reply_keyboard())
     else:
-        await update.message.reply_text("You are not currently in a chat or searching. Use the buttons below to find a partner.")
-        # Ensure main reply keyboard is shown
-        await update.message.reply_text(
-            "What would you like to do next?",
-            reply_markup=get_command_reply_keyboard()
-        )
+        await update.message.reply_text("You are not currently in a chat or searching. Use the buttons below to find a partner.", reply_markup=get_command_reply_keyboard())
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Provides information on how to use the bot."""
@@ -282,7 +311,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 async def send_match_found_message(user1_id, user2_id, application_bot):
-    """Sends the 'Partner Found' message to both matched users."""
+    """Sends the 'Partner Found' message to both matched users and shows typing."""
     match_id = uuid.uuid4()
     
     if user1_id in user_data_store:
@@ -301,13 +330,16 @@ async def send_match_found_message(user1_id, user2_id, application_bot):
     )
 
     try:
-        # --- NEW: Send typing action for better UX ---
-        await application_bot.send_chat_action(chat_id=user1_id, action=ChatAction.TYPING)
-        await application_bot.send_chat_action(chat_id=user2_id, action=ChatAction.TYPING)
-        await asyncio.sleep(1) # Small delay to make typing action visible
-
+        # Send match found message first
         await application_bot.send_message(chat_id=user1_id, text=match_info_msg) 
         await application_bot.send_message(chat_id=user2_id, text=match_info_msg)
+        
+        # Then send typing action. This will make it appear as if the other user is typing.
+        await application_bot.send_chat_action(chat_id=user1_id, action=ChatAction.TYPING) # User1 sees typing from User2
+        await application_bot.send_chat_action(chat_id=user2_id, action=ChatAction.TYPING) # User2 sees typing from User1
+        # No sleep needed here, the typing indicator will naturally disappear after a few seconds
+        # or when an actual message is sent.
+
         logger.info(f"Match {match_id} found between {user1_id} and {user2_id}.")
     except Exception as e:
         logger.error(f"Error sending match found message: {e}")
@@ -404,7 +436,7 @@ async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             except Exception as e:
                 logger.error(f"Error sending anonymous message from {user_id} to {partner_id}: {e}")
                 await update.message.reply_text("Could not send your message to your partner. They might have left or blocked the bot.")
-                await stop_chat(update, context)
+                await end_chat_for_users(user_id, partner_id, context.application) 
         else:
             await update.message.reply_text("You are not currently in a chat. Use the buttons below to find a partner.")
             await remove_user_from_search(user_id)
@@ -460,8 +492,12 @@ def main() -> None:
     # Report Conversation Handler (post-chat only, specific reasons)
     report_conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(chat_feedback_report_start, pattern='^chat_feedback_report_start$')],
-        states={}, # No states needed for simple category selection
-        fallbacks=[CommandHandler("start", start)],
+        states={
+            REPORT_REASON_SELECTION: [ # This is the state where report reasons are selected
+                CallbackQueryHandler(handle_specific_report_reason, pattern='^report_reason_')
+            ]
+        },
+        fallbacks=[CommandHandler("start", start)], # If in report flow and user types /start
         map_to_parent={
             ConversationHandler.END: ConversationHandler.END 
         }
@@ -479,7 +515,7 @@ def main() -> None:
 
     # Callback Query Handlers (for inline buttons, e.g., post-chat feedback/reports)
     application.add_handler(CallbackQueryHandler(handle_chat_feedback, pattern='^chat_feedback_(up|down)$'))
-    application.add_handler(CallbackQueryHandler(handle_specific_report_reason, pattern='^report_reason_'))
+    # Removed the standalone CallbackQueryHandler for handle_specific_report_reason as it's now in report_conv_handler
 
     # Message handler to catch all text/media that is not a command or specific button text
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.Regex("^(🔍 Find a Match|🛑 Stop Chat)$"), forward_message))
