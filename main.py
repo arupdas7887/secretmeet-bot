@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 # In-memory storage for user data
 user_data_store = {}
+# In-memory storage for blocked users: {user_id: datetime_of_expiration}
+blocked_users = {}
 
 # Conversation states
 FEEDBACK_MESSAGE = 1
@@ -54,6 +56,7 @@ async def create_user(user_id: int, username: str, full_name: str):
     else:
         user_data_store[user_id]["username"] = username
         user_data_store[user_id]["full_name"] = full_name
+        user_data_store[user_id]["last_active"] = datetime.now() # Update last active
         logger.info(f"User {user_id} already exists in memory, updated info.")
 
 
@@ -72,6 +75,27 @@ async def remove_user_from_search(user_id: int):
         user_data_store[user_id]["last_active"] = datetime.now()
         logger.info(f"User {user_id} removed from search queue in memory.")
 
+# Universal Block Check Function
+async def is_blocked(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    user_id = update.effective_user.id
+    
+    # Clean up expired blocks
+    expired_users = [uid for uid, expiry_time in blocked_users.items() if datetime.now() >= expiry_time]
+    for uid in expired_users:
+        del blocked_users[uid]
+        logger.info(f"User {uid} block expired and removed from blocked_users.")
+
+    if user_id in blocked_users:
+        message_text = "You are temporarily blocked from using this bot for 24 hours due to a violation of our rules."
+        if update.callback_query:
+            await update.callback_query.answer(text=message_text, show_alert=True)
+            # No edit_message_text here, just an alert.
+        else:
+            await update.message.reply_text(message_text)
+        logger.info(f"Blocked user {user_id} attempted to interact with bot.")
+        return True
+    return False
+
 # Utility functions for keyboards
 def get_command_reply_keyboard():
     """Returns the persistent reply keyboard with Find Match and Stop Chat buttons."""
@@ -81,12 +105,13 @@ def get_command_reply_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-def get_post_chat_feedback_keyboard():
+def get_post_chat_feedback_keyboard(reported_partner_id: int):
     """Returns the inline keyboard for post-chat feedback and reports."""
     keyboard = [
         [InlineKeyboardButton("👍", callback_data="chat_feedback_up"),
          InlineKeyboardButton("👎", callback_data="chat_feedback_down")],
-        [InlineKeyboardButton("⚠️ Report —", callback_data="chat_feedback_report_start")]
+        # Pass reported_partner_id to the report start callback
+        [InlineKeyboardButton("⚠️ Report", callback_data=f"chat_feedback_report_start_{reported_partner_id}")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -103,6 +128,9 @@ def get_report_reasons_keyboard():
 # Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handles the /start command, creates/updates user, and shows main keyboard."""
+    if await is_blocked(update, context):
+        return ConversationHandler.END # Exit if blocked
+
     user_id = update.effective_user.id
     username = update.effective_user.username
     full_name = update.effective_user.full_name
@@ -117,6 +145,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def find_next_match_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Initiates the search for a new partner."""
+    if await is_blocked(update, context):
+        return # Exit if blocked
+
     user_id = update.effective_user.id
     username = update.effective_user.username
     full_name = update.effective_user.full_name
@@ -129,7 +160,6 @@ async def find_next_match_command(update: Update, context: ContextTypes.DEFAULT_
         message_text = "You are already in a chat. Please stop your current chat first to find a new match."
         if update.callback_query:
             await update.callback_query.answer(text=message_text, show_alert=True)
-            # No edit_message_text here, just an alert to avoid replacing the active chat info
         else:
             await update.message.reply_text(message_text, reply_markup=get_command_reply_keyboard())
         logger.info(f"User {user_id} attempted to find a match while already in chat {user_data['match_id']}.")
@@ -147,6 +177,9 @@ async def find_next_match_command(update: Update, context: ContextTypes.DEFAULT_
 # General Feedback Handlers (only accessible via /sendfeedback command)
 async def send_feedback_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the feedback conversation."""
+    if await is_blocked(update, context):
+        return ConversationHandler.END # Exit if blocked
+
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text("Please type and send your general feedback message. You can type /cancel to go back to the main menu at any time.")
@@ -156,6 +189,9 @@ async def send_feedback_start(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receives and forwards general feedback to the admin."""
+    if await is_blocked(update, context):
+        return ConversationHandler.END # Exit if blocked
+
     user_id = update.effective_user.id
     feedback_text = update.message.text
     
@@ -182,6 +218,9 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # Post-Chat Feedback Handlers
 async def handle_chat_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles positive/negative chat feedback."""
+    if await is_blocked(update, context):
+        return # Exit if blocked
+
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -201,9 +240,22 @@ async def handle_chat_feedback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def chat_feedback_report_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the chat reporting process by showing reasons."""
+    if await is_blocked(update, context):
+        return ConversationHandler.END # Exit if blocked
+
     query = update.callback_query
     await query.answer()
     
+    # Extract reported_partner_id from callback_data (e.g., "chat_feedback_report_start_12345")
+    try:
+        reported_partner_id = int(query.data.split('_')[-1])
+        context.user_data['reported_partner_id'] = reported_partner_id # Store for later use
+        logger.info(f"Reporter {query.from_user.id} initiating report for partner {reported_partner_id}.")
+    except ValueError:
+        logger.error(f"Invalid reported_partner_id in callback data: {query.data}")
+        await query.edit_message_text("Error initiating report. Please try again.")
+        return ConversationHandler.END
+
     await query.edit_message_text(
         "Choose a reason for your report:",
         reply_markup=get_report_reasons_keyboard()
@@ -211,12 +263,18 @@ async def chat_feedback_report_start(update: Update, context: ContextTypes.DEFAU
     return REPORT_REASON_SELECTION # Transition to the new state
 
 async def handle_specific_report_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handles the selection of a specific report reason and sends it anonymously."""
+    """Handles the selection of a specific report reason and sends it to the admin."""
+    if await is_blocked(update, context):
+        return ConversationHandler.END # Exit if blocked
+
     query = update.callback_query
     await query.answer() # Acknowledge callback immediately
-    user_id = query.from_user.id
+    reporter_user_id = query.from_user.id
     reason = query.data.replace('report_reason_', '').replace('_', ' ').title()
-    logger.info(f"User {user_id} selected report reason: {reason}") # Log the selected reason
+    logger.info(f"User {reporter_user_id} selected report reason: {reason}") # Log the selected reason
+
+    # Retrieve reported_partner_id from context.user_data
+    reported_user_id = context.user_data.pop('reported_partner_id', None) # Remove it after use
 
     if reason == "Cancel":
         try:
@@ -224,46 +282,126 @@ async def handle_specific_report_reason(update: Update, context: ContextTypes.DE
                 "Report cancelled.", # Minimal message for cancellation
                 reply_markup=None # Remove inline keyboard, relying on persistent keyboard
             )
-            logger.info(f"User {user_id} report cancelled. Message edited.")
+            logger.info(f"User {reporter_user_id} report cancelled. Message edited.")
         except Exception as e:
-            logger.error(f"Error editing message for report cancellation for user {user_id}: {e}")
+            logger.error(f"Error editing message for report cancellation for user {reporter_user_id}: {e}")
             # Fallback if editing fails: send a new message
             await context.bot.send_message(
-                chat_id=user_id,
+                chat_id=reporter_user_id,
                 text="Report cancelled, but there was an error updating the message.",
                 reply_markup=get_command_reply_keyboard()
             )
         return ConversationHandler.END
-    else:
+    else: # It's a valid report reason
+        if not reported_user_id:
+            logger.error(f"No reported_partner_id found in context.user_data for report from {reporter_user_id}.")
+            await query.edit_message_text("Error: Could not find reported partner's info. Please try again.", reply_markup=None)
+            return ConversationHandler.END
+
+        # Get reported user's details
+        reported_user_info = await get_user(reported_user_id)
+        reported_username = reported_user_info.get('username', 'N/A') if reported_user_info else 'N/A'
+        reported_full_name = reported_user_info.get('full_name', 'N/A') if reported_user_info else 'N/A'
+
+        # Get reporter's details
+        reporter_user_info = await get_user(reporter_user_id)
+        reporter_username = reporter_user_info.get('username', 'N/A') if reporter_user_info else 'N/A'
+        reporter_full_name = reporter_user_info.get('full_name', 'N/A') if reporter_user_info else 'N/A'
+
+        report_message_to_admin = (
+            f"🚫 Chat Report 🚫\n"
+            f"Category: {reason}\n\n"
+            f"--- Reported Person ---\n"
+            f"User ID: `{reported_user_id}`\n"
+            f"Username: @{reported_username}\n"
+            f"Full Name: {reported_full_name}\n\n"
+            f"--- Reported By ---\n"
+            f"User ID: `{reporter_user_id}`\n"
+            f"Username: @{reporter_username}\n"
+            f"Full Name: {reporter_full_name}"
+        )
+        admin_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚫 Block User for 24h", callback_data=f"admin_block_user:{reported_user_id}")]
+        ])
+
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_USER_ID,
-                text=f"Anonymous Chat Report - Category: {reason}"
+                text=report_message_to_admin,
+                reply_markup=admin_keyboard,
+                parse_mode='Markdown' # For backticks around ID
             )
-            logger.info(f"Anonymous report received from {user_id} for reason: {reason}")
-            # Edit the existing inline message to a minimal acknowledgment and remove the keyboard
+            logger.info(f"Report sent to admin from {reporter_user_id} for reason: {reason} (Reported: {reported_user_id}).")
+            
+            # Edit the existing inline message to a minimal acknowledgment and remove the keyboard for the reporter
             await query.edit_message_text(
                 "Report sent.", # Minimal acknowledgment
                 reply_markup=None # Remove the inline keyboard
             )
-            logger.info(f"User {user_id} report sent. Message edited.")
+            logger.info(f"User {reporter_user_id} report sent. Message edited for reporter.")
         except Exception as e:
-            logger.error(f"Failed to send anonymous report from {user_id} for reason {reason}: {e}")
-            # Fallback if editing fails: send a new message
+            logger.error(f"Failed to send report from {reporter_user_id} for reason {reason} (Reported: {reported_user_id}): {e}")
+            # Fallback if sending or editing fails: send a new message to the reporter
             await context.bot.send_message(
-                chat_id=user_id,
+                chat_id=reporter_user_id,
                 text="There was an error sending your report or updating the message. Please try again later.",
                 reply_markup=get_command_reply_keyboard()
             )
 
-        # The persistent ReplyKeyboardMarkup is expected to be visible after conversation ends.
-        # No additional message is sent for it.
         return ConversationHandler.END
+
+async def admin_block_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin-only callback to block a user for 24 hours."""
+    query = update.callback_query
+    await query.answer() # Acknowledge the callback
+
+    admin_id = query.from_user.id
+    if admin_id != ADMIN_USER_ID:
+        await query.edit_message_text("You are not authorized to use this command.")
+        logger.warning(f"Unauthorized attempt to block user by {admin_id}.")
+        return
+
+    try:
+        user_id_to_block = int(query.data.split(':')[-1])
+        expiration_time = datetime.now() + timedelta(hours=24)
+        blocked_users[user_id_to_block] = expiration_time
+        logger.info(f"Admin {admin_id} blocked user {user_id_to_block} until {expiration_time}.")
+
+        # Fetch blocked user's details for confirmation message
+        blocked_user_info = await get_user(user_id_to_block)
+        blocked_username = blocked_user_info.get('username', 'N/A') if blocked_user_info else 'N/A'
+        blocked_full_name = blocked_user_info.get('full_name', 'N/A') if blocked_user_info else 'N/A'
+
+        confirmation_message = (
+            f"User blocked for 24 hours:\n"
+            f"ID: `{user_id_to_block}`\n"
+            f"Username: @{blocked_username}\n"
+            f"Full Name: {blocked_full_name}\n"
+            f"Will unblock automatically at {expiration_time.strftime('%Y-%m-%d %H:%M:%S')} IST."
+        )
+        await query.edit_message_text(
+            text=confirmation_message,
+            parse_mode='Markdown',
+            reply_markup=None # Remove the block button from the report to prevent re-blocking
+        )
+    except Exception as e:
+        logger.error(f"Error blocking user by admin {admin_id}: {e}")
+        await query.edit_message_text("Error blocking user. Please check logs.")
+
 
 async def end_chat_for_users(user1_id: int, user2_id: int, application_bot: Application, initiator_id: int = None) -> None:
     """Ends the chat for both users and offers feedback.
     initiator_id: The ID of the user who explicitly stopped the chat, if any."""
     
+    # Clean up expired blocks for users involved in chat end
+    for user_id_check in [user1_id, user2_id]:
+        if user_id_check in blocked_users and datetime.now() >= blocked_users[user_id_check]:
+            del blocked_users[user_id_check]
+            logger.info(f"User {user_id_check} block expired at chat end.")
+
+    is_user1_blocked = user1_id in blocked_users
+    is_user2_blocked = user2_id in blocked_users
+
     if initiator_id: # The one who explicitly stopped
         initiator_text = "You have stopped the chat. You are now out of the queue."
         partner_text = "Your partner has stopped the chat 😔\nUse the buttons below to find a new partner."
@@ -279,36 +417,49 @@ async def end_chat_for_users(user1_id: int, user2_id: int, application_bot: Appl
             user_data_store[user_id]["last_active"] = datetime.now()
 
     try:
-        # Send distinct messages based on initiator
+        # Send distinct messages based on initiator, only if not blocked
         if initiator_id == user1_id:
-            await application_bot.bot.send_message(chat_id=user1_id, text=initiator_text)
-            await application_bot.bot.send_message(chat_id=user2_id, text=partner_text)
+            if not is_user1_blocked:
+                await application_bot.bot.send_message(chat_id=user1_id, text=initiator_text)
+            if not is_user2_blocked:
+                await application_bot.bot.send_message(chat_id=user2_id, text=partner_text)
         elif initiator_id == user2_id:
-            await application_bot.bot.send_message(chat_id=user2_id, text=initiator_text)
-            await application_bot.bot.send_message(chat_id=user1_id, text=partner_text)
+            if not is_user2_blocked:
+                await application_bot.bot.send_message(chat_id=user2_id, text=initiator_text)
+            if not is_user1_blocked:
+                await application_bot.bot.send_message(chat_id=user1_id, text=partner_text)
         else: # No specific initiator (e.g., error in forwarding)
-            await application_bot.bot.send_message(chat_id=user1_id, text=initiator_text)
-            await application_bot.bot.send_message(chat_id=user2_id, text=partner_text)
+            if not is_user1_blocked:
+                await application_bot.bot.send_message(chat_id=user1_id, text=initiator_text)
+            if not is_user2_blocked:
+                await application_bot.bot.send_message(chat_id=user2_id, text=partner_text)
 
-        # Send feedback option to BOTH users
+        # Send feedback option to BOTH users, but only if not blocked
         feedback_msg = "If you wish, leave your feedback about your partner. It will help us find better partners for you in the future."
-        await application_bot.bot.send_message(
-            chat_id=user1_id,
-            text=feedback_msg,
-            reply_markup=get_post_chat_feedback_keyboard()
-        )
-        await application_bot.bot.send_message(
-            chat_id=user2_id,
-            text=feedback_msg,
-            reply_markup=get_post_chat_feedback_keyboard()
-        )
-        logger.info(f"Chat ended for {user1_id} and {user2_id}. Feedback offered.")
+        
+        # Ensure reported_partner_id is correct for each feedback message
+        if not is_user1_blocked:
+            await application_bot.bot.send_message(
+                chat_id=user1_id,
+                text=feedback_msg,
+                reply_markup=get_post_chat_feedback_keyboard(reported_partner_id=user2_id) # Reporter user1, reported user2
+            )
+        if not is_user2_blocked:
+            await application_bot.bot.send_message(
+                chat_id=user2_id,
+                text=feedback_msg,
+                reply_markup=get_post_chat_feedback_keyboard(reported_partner_id=user1_id) # Reporter user2, reported user1
+            )
+        logger.info(f"Chat ended for {user1_id} and {user2_id}. Feedback offered (to unblocked users).")
 
     except Exception as e:
         logger.error(f"Error ending chat or offering feedback for {user1_id}, {user2_id}: {e}")
 
 async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Ends the current chat and offers post-chat feedback to both participants."""
+    if await is_blocked(update, context):
+        return # Exit if blocked
+
     user_id = update.effective_user.id
     user_data = await get_user(user_id)
 
@@ -330,10 +481,13 @@ async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             # Offer feedback specifically to the initiator, as partner is unknown or state is inconsistent
             feedback_msg = "If you wish, you can still leave feedback about your last interaction."
             try:
+                # Use a dummy ID (e.g., 0) for reported_partner_id if truly unknown, but better to avoid this path
+                # if possible by ensuring partner_id is always resolved before offering report.
+                # For robustness, using 0 and handling it in report handlers is an option.
                 await context.bot.send_message(
                     chat_id=user_id,
                     text=feedback_msg,
-                    reply_markup=get_post_chat_feedback_keyboard()
+                    reply_markup=get_post_chat_feedback_keyboard(reported_partner_id=0) # Dummy ID for unknown partner
                 )
                 logger.info(f"User {user_id} stopped chat with missing partner. Feedback offered to initiator.")
             except Exception as e:
@@ -343,6 +497,9 @@ async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Provides information on how to use the bot."""
+    if await is_blocked(update, context):
+        return # Exit if blocked
+
     await update.message.reply_text(
         "Here's how to use The Secret Meet:\n\n"
         "**Persistent Buttons (bottom of chat):**\n"
@@ -355,12 +512,23 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• `/stop`: (Same as 'Stop Chat' button) End your current chat.\n"
         "• `/sendfeedback`: Send general suggestions or comments directly to the bot owner.\n\n"
         "**During a chat:** Simply send any message (text, photos, videos, voice) and it will be forwarded anonymously to your partner.\n\n"
-        "**After a chat:** You'll be prompted to give feedback (👍/👎) or report any issues (⚠️ Report) about your partner.",
+        "**After a chat:** You'll be prompted to give feedback (👍/👎) or report any issues (⚠️ Report) about your partner.\n\n"
+        "**Admin Commands (for bot owner only):**\n"
+        "• `/unblock <user_id>`: Manually unblock a user by their ID.\n"
+        "• `🚫 Block User for 24h` button (in reports): Temporarily block a reported user.",
         reply_markup=get_command_reply_keyboard() # Show persistent command keyboard after help
     )
 
 async def send_match_found_message(user1_id, user2_id, application_bot):
     """Sends the 'Partner Found' message to both matched users and shows typing."""
+    # Check if any user became blocked during the search process
+    if user1_id in blocked_users and datetime.now() < blocked_users[user1_id]:
+        logger.info(f"User {user1_id} found match but is blocked. Not sending message.")
+        return
+    if user2_id in blocked_users and datetime.now() < blocked_users[user2_id]:
+        logger.info(f"User {user2_id} found match but is blocked. Not sending message.")
+        return
+
     match_id = uuid.uuid4()
     
     if user1_id in user_data_store:
@@ -405,9 +573,11 @@ async def matching_scheduler(application: Application):
     while True:
         await asyncio.sleep(1) # Reduced to 1 second for faster matching
         
+        # Filter out blocked users from the search queue
         users_in_search = [
             user for user_id, user in user_data_store.items()
-            if user["in_search"] and user["match_id"] is None # <--- Key conditions
+            if user["in_search"] and user["match_id"] is None and \
+               (user_id not in blocked_users or datetime.now() >= blocked_users[user_id])
         ]
         
         if len(users_in_search) < 2:
@@ -421,6 +591,9 @@ async def matching_scheduler(application: Application):
 
 async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Forwards messages anonymously between matched users, blocking specific content."""
+    if await is_blocked(update, context):
+        return # Exit if blocked
+
     user_id = update.effective_user.id
     
     # Ignore messages that are commands or specific button texts handled by RegexHandler
@@ -439,6 +612,14 @@ async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 break
         
         if partner_id:
+            # Check if partner is blocked
+            if partner_id in blocked_users and datetime.now() < blocked_users[partner_id]:
+                await update.message.reply_text("Your partner has been temporarily blocked and cannot receive messages.")
+                logger.info(f"User {user_id} tried to send message to blocked partner {partner_id}.")
+                # End chat for the non-blocked user, as communication is broken
+                await end_chat_for_users(user_id, partner_id, context.application, initiator_id=None) # Bot initiated stop
+                return
+
             try:
                 # --- Anonymity: No forward sign is ensured by re-sending content, not using forward_message. ---
                 # --- Anonymity: Blocking contact cards. ---
@@ -503,6 +684,7 @@ async def post_init_callback(application: Application) -> None:
         ("help", "Get information on how to use the bot"),
         ("next", "Find a new partner (same as Find a Match button)"),
         ("stop", "Stop your current chat (same as Stop Chat button)"),
+        ("unblock", "Admin: Unblock a user by ID") # Added for admin unblock capability
     ])
     logger.info("Bot commands set.")
     logger.info("post_init_callback finished.")
@@ -511,6 +693,27 @@ async def post_shutdown_callback(application: Application) -> None:
     """Callback run before the bot shuts down."""
     logger.info("Bot application shutting down (no database close).")
     pass
+
+async def admin_unblock_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin-only command to manually unblock a user."""
+    if update.effective_user.id != ADMIN_USER_ID:
+        await update.message.reply_text("You are not authorized to use this command.")
+        logger.warning(f"Unauthorized attempt to unblock user by {update.effective_user.id}.")
+        return
+    
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: /unblock <user_id>")
+        return
+
+    user_id_to_unblock = int(context.args[0])
+    if user_id_to_unblock in blocked_users:
+        del blocked_users[user_id_to_unblock]
+        await update.message.reply_text(f"User `{user_id_to_unblock}` has been unblocked manually.")
+        logger.info(f"Admin {update.effective_user.id} manually unblocked user {user_id_to_unblock}.")
+    else:
+        await update.message.reply_text(f"User `{user_id_to_unblock}` is not currently blocked.")
+    await update.message.reply_text(f"Current blocked users: {list(blocked_users.keys())}")
+
 
 def main() -> None:
     """Starts the bot."""
@@ -522,9 +725,6 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
 
     # General Feedback Conversation Handler (only accessible via command now)
-    # The entry point for this handler is still CommandHandler("sendfeedback", send_feedback_start)
-    # This means the functionality is still there if someone types /sendfeedback,
-    # but it won't be listed in the official bot commands menu.
     feedback_conv_handler = ConversationHandler(
         entry_points=[CommandHandler("sendfeedback", send_feedback_start)],
         states={
@@ -542,7 +742,7 @@ def main() -> None:
 
     # Report Conversation Handler (post-chat only, specific reasons)
     report_conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(chat_feedback_report_start, pattern='^chat_feedback_report_start$')],
+        entry_points=[CallbackQueryHandler(chat_feedback_report_start, pattern=r'^chat_feedback_report_start_\d+$')], # Regex to match ID
         states={
             REPORT_REASON_SELECTION: [ # This is the state where report reasons are selected
                 CallbackQueryHandler(handle_specific_report_reason, pattern='^report_reason_')
@@ -559,6 +759,7 @@ def main() -> None:
     application.add_handler(CommandHandler("stop", stop_chat))
     application.add_handler(CommandHandler("next", find_next_match_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("unblock", admin_unblock_user)) # Admin unblock command
     
     # Message Handlers for the persistent reply keyboard buttons
     application.add_handler(MessageHandler(filters.Regex("^🔍 Find a Match$"), find_next_match_command))
@@ -566,7 +767,7 @@ def main() -> None:
 
     # Callback Query Handlers (for inline buttons, e.g., post-chat feedback/reports)
     application.add_handler(CallbackQueryHandler(handle_chat_feedback, pattern='^chat_feedback_(up|down)$'))
-    # Removed the standalone CallbackQueryHandler for handle_specific_report_reason as it's now in report_conv_handler
+    application.add_handler(CallbackQueryHandler(admin_block_user, pattern=r'^admin_block_user:\d+$')) # Admin block callback
 
     # Message handler to catch all text/media that is not a command or specific button text
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.Regex("^(🔍 Find a Match|🛑 Stop Chat)$"), forward_message))
