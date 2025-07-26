@@ -20,7 +20,7 @@ from telegram.ext import (
 # Configuration
 # For Render deployment, these should ideally be set as environment variables.
 # But for simplicity, we're keeping them hardcoded as per previous instructions.
-BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk" # REPLACE WITH YOUR ACTUAL BOT TOKEN
+BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk"# REPLACE WITH YOUR ACTUAL BOT TOKEN
 DATABASE_URL = "postgresql://secret_meet_bot_user:i3Dqcwcwyvn5zbIspVQvtlRTiqnMKLDI@dpg-d22d64h5pdvs738ri6i0-a.oregon-postgres.render.com/secret_meet_bot" # REPLACE WITH YOUR ACTUAL DATABASE URL
 
 # Enable logging
@@ -431,14 +431,21 @@ async def post_init_callback(application: Application) -> None:
     """Callback function to initialize database and start scheduler after Application is built."""
     logger.info("Running post_init_callback...")
     await init_db()
-    application.create_task(matching_scheduler(application))
+    # Store the task in bot_data to ensure it's managed by the Application's lifecycle
+    application.bot_data['matching_scheduler_task'] = application.create_task(matching_scheduler(application))
     logger.info("post_init_callback finished.")
+
+
+# Add a shutdown hook for the database pool
+async def pre_shutdown_callback(application: Application) -> None:
+    logger.info("Bot application shutting down. Closing database pool.")
+    await close_db()
 
 def main() -> None:
     """Start the bot."""
     webhook_url = os.getenv("WEBHOOK_URL")
 
-    application = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init_callback).build()
+    application = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init_callback).pre_shutdown(pre_shutdown_callback).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
