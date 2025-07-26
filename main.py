@@ -18,10 +18,8 @@ from telegram.ext import (
 )
 
 # Configuration
-# For Render deployment, these should ideally be set as environment variables.
-# But for simplicity, we're keeping them hardcoded as per previous instructions.
-BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk"  # REPLACE WITH YOUR ACTUAL BOT TOKEN
-DATABASE_URL = "postgresql://secret_meet_bot_user:i3Dqcwcwyvn5zbIspVQvtlRTiqnMKLDI@dpg-d22d64h5pdvs738ri6i0-a.oregon-postgres.render.com/secret_meet_bot" # CORRECTED DATABASE URL
+BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk"
+DATABASE_URL = "postgresql://secret_meet_bot_user:i3Dqcwcwyvn5zbIspVQvtlRTiqnMKLDI@dpg-d22d64h5pdvs738ri6i0-a.oregon-postgres.render.com/secret_meet_bot"
 
 # Enable logging
 logging.basicConfig(
@@ -36,7 +34,6 @@ SELECT_COUNTRY, ENTER_AGE, SELECT_GENDER = range(3)
 db_pool = None
 
 async def init_db():
-    """Initializes the database connection pool and creates tables if they don't exist."""
     global db_pool
     if db_pool is None:
         db_pool = await asyncpg.create_pool(DATABASE_URL)
@@ -48,7 +45,7 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
                 username TEXT,
-                full_name TEXT,  -- ADDED THIS LINE
+                full_name TEXT,
                 country TEXT,
                 age INT,
                 gender TEXT,
@@ -75,7 +72,6 @@ async def init_db():
         logger.info("Database tables checked/created successfully.")
 
 async def close_db():
-    """Closes the database connection pool."""
     global db_pool
     if db_pool:
         await db_pool.close()
@@ -135,7 +131,6 @@ async def find_matching_users(user_id: int):
             query += " AND gender = 'male'"
         # If current_user['gender'] is 'other' or None, no additional gender filter applied.
 
-        # Order by last_active to try to match more active users
         query += " ORDER BY last_active ASC LIMIT 1"
 
         potential_match = await conn.fetchrow(query, *params)
@@ -150,7 +145,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await create_user(user_id, username, full_name)
     user_data = await get_user(user_id)
 
-    # If user has already set profile, ask to search for match or restart
     if user_data and user_data['country'] and user_data['age'] and user_data['gender']:
         keyboard = [
             [InlineKeyboardButton("🔍 Find a Match", callback_data="find_match")],
@@ -163,7 +157,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
         return ConversationHandler.END
 
-    # Otherwise, start profile setup
     keyboard = [
         [InlineKeyboardButton("India", callback_data="India"),
          InlineKeyboardButton("USA", callback_data="USA"),
@@ -355,7 +348,6 @@ async def send_match_found_message(user1_id, user2_id, context: ContextTypes.DEF
             )
 
 async def matching_scheduler(application: Application):
-    """Periodically tries to match users."""
     while True:
         await asyncio.sleep(15)
         if not db_pool:
@@ -428,21 +420,17 @@ async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def post_init_callback(application: Application) -> None:
-    """Callback function to initialize database and start scheduler after Application is built."""
     logger.info("Running post_init_callback...")
     await init_db()
-    # Store the task in bot_data to ensure it's managed by the Application's lifecycle
     application.bot_data['matching_scheduler_task'] = application.create_task(matching_scheduler(application))
     logger.info("post_init_callback finished.")
 
 
-# Add a shutdown hook for the database pool
-async def post_shutdown_callback(application: Application) -> None: # Renamed from pre_shutdown_callback
+async def post_shutdown_callback(application: Application) -> None:
     logger.info("Bot application shutting down. Closing database pool.")
     await close_db()
 
 def main() -> None:
-    """Start the bot."""
     webhook_url = os.getenv("WEBHOOK_URL")
 
     application = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init_callback).post_shutdown(post_shutdown_callback).build()
