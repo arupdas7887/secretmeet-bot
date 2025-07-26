@@ -377,10 +377,6 @@ async def matching_scheduler(application: ApplicationBuilder):
             logger.info("Not enough users in queue for matching.")
             continue
 
-        # Simple matching logic: Pick the first two available users
-        # For this simplified flow (no preferred gender), just match any two in search.
-        # If gender is recorded, try to match opposite genders.
-        
         matched_pair = None
         for i in range(len(users_in_search)):
             user1 = users_in_search[i]
@@ -440,24 +436,23 @@ async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     else:
         await update.message.reply_text("You are not currently in a chat. Send /start to find a partner.")
 
-async def post_init(application: ApplicationBuilder) -> None:
-    """Runs after the application is initialized."""
-    logger.info("Bot application started. Initializing database and background tasks.")
-    await init_db()
-    application.create_task(matching_scheduler(application))
-
-
-async def post_shutdown(application: ApplicationBuilder) -> None:
-    """Runs before the application shuts down."""
-    logger.info("Bot application shutting down. Closing database pool.")
-    await close_db()
-
 
 def main() -> None:
     """Start the bot."""
     webhook_url = os.getenv("WEBHOOK_URL")
 
     application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # --- Directly initialize DB and start scheduler here ---
+    # These operations are usually done in post_init, but due to env issues,
+    # we're running them directly within the main function before starting the bot loop.
+    async def startup_tasks():
+        await init_db()
+        application.create_task(matching_scheduler(application))
+
+    # Run the startup tasks immediately
+    asyncio.run(startup_tasks())
+    # --- End of direct initialization ---
 
     # Handlers for conversation states
     conv_handler = ConversationHandler(
@@ -487,9 +482,9 @@ def main() -> None:
     # Handle all other messages for forwarding (corrected filter here)
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_message))
 
-    # Set up post-init and post-shutdown callbacks
-    application.post_init(post_init)
-    application.post_shutdown(post_shutdown)
+    # The post_init and post_shutdown callbacks are removed from here.
+    # The startup tasks are now run directly.
+    # The database connection close will happen when the process exits.
 
     if webhook_url:
         logger.info(f"Running with Webhook: {webhook_url}/{BOT_TOKEN}")
