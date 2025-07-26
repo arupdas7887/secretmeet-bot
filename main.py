@@ -19,8 +19,8 @@ from telegram.ext import (
 # Configuration
 # For Render deployment, these should ideally be set as environment variables.
 # But for simplicity, we're keeping them hardcoded as per previous instructions.
-BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk"  # REPLACE WITH YOUR ACTUAL BOT TOKEN
-DATABASE_URL = "postgres://secretmeet_bot_user:d83U1t8UqG9d0n5pYfC8b4Fh5j7x4I0v@dpg-cpt28oql6cac739097qg-a.oregon-postgres.render.com/secretmeet_bot?sslmode=require" # REPLACE WITH YOUR ACTUAL DATABASE URL
+BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk" # REPLACE WITH YOUR ACTUAL BOT TOKEN
+DATABASE_URL = "postgresql://secret_meet_bot_user:i3Dqcwcwyvn5zbIspVQvtlRTiqnMKLDI@dpg-d22d64h5pdvs738ri6i0-a.oregon-postgres.render.com/secret_meet_bot" # REPLACE WITH YOUR ACTUAL DATABASE URL
 
 # Enable logging
 logging.basicConfig(
