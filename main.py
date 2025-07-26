@@ -485,7 +485,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(restart_profile_callback, pattern='^restart_profile$'))
 
     # Handle all other messages for forwarding (corrected filter here)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND | filters.ALL_MEDIA | filters.LOCATION | filters.CONTACT | filters.POLL, forward_message))
+    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_message))
 
     # Set up post-init and post-shutdown callbacks
     application.post_init(post_init)
