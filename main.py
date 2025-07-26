@@ -116,18 +116,6 @@ async def find_matching_users(user_id: int):
         if not current_user:
             return None
 
-        # Logic for matching (simplified as preferred_gender is no longer asked)
-        # Now, a user will simply be matched with ANY available user in search
-        # or a user of their opposite gender if gender is specified.
-        # This assumes current_user['gender'] is set (male/female)
-
-        # Try to find a user in search who is not self and is available
-        # If current user is male, search for female. If female, search for male.
-        # If gender is not set or "other", search for any.
-
-        # Logic: find any user who is 'in_search' and is not the current user
-        # And their gender is opposite to the current user (if specified)
-
         query = """
         SELECT * FROM users
         WHERE in_search = TRUE
@@ -179,7 +167,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
          InlineKeyboardButton("Germany", callback_data="Germany")],
         [InlineKeyboardButton("France", callback_data="France"),
          InlineKeyboardButton("Brazil", callback_data="Brazil"),
-         InlineKeyboardButton("Japan")],
+         InlineKeyboardButton("Japan", callback_data="Japan")],
+        [InlineKeyboardButton("Bhutan", callback_data="Bhutan"),
+         InlineKeyboardButton("Indonesia", callback_data="Indonesia"),
+         InlineKeyboardButton("Malaysia", callback_data="Malaysia")],
+        [InlineKeyboardButton("Nepal", callback_data="Nepal"),
+         InlineKeyboardButton("Sri Lanka", callback_data="Sri Lanka"),
+         InlineKeyboardButton("Pakistan", callback_data="Pakistan")],
         [InlineKeyboardButton("Other", callback_data="Other")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -211,7 +205,13 @@ async def invalid_country_input(update: Update, context: ContextTypes.DEFAULT_TY
          InlineKeyboardButton("Germany", callback_data="Germany")],
         [InlineKeyboardButton("France", callback_data="France"),
          InlineKeyboardButton("Brazil", callback_data="Brazil"),
-         InlineKeyboardButton("Japan")],
+         InlineKeyboardButton("Japan", callback_data="Japan")],
+        [InlineKeyboardButton("Bhutan", callback_data="Bhutan"),
+         InlineKeyboardButton("Indonesia", callback_data="Indonesia"),
+         InlineKeyboardButton("Malaysia", callback_data="Malaysia")],
+        [InlineKeyboardButton("Nepal", callback_data="Nepal"),
+         InlineKeyboardButton("Sri Lanka", callback_data="Sri Lanka"),
+         InlineKeyboardButton("Pakistan", callback_data="Pakistan")],
         [InlineKeyboardButton("Other", callback_data="Other")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -286,7 +286,13 @@ async def restart_profile_callback(update: Update, context: ContextTypes.DEFAULT
          InlineKeyboardButton("Germany", callback_data="Germany")],
         [InlineKeyboardButton("France", callback_data="France"),
          InlineKeyboardButton("Brazil", callback_data="Brazil"),
-         InlineKeyboardButton("Japan")],
+         InlineKeyboardButton("Japan", callback_data="Japan")],
+        [InlineKeyboardButton("Bhutan", callback_data="Bhutan"),
+         InlineKeyboardButton("Indonesia", callback_data="Indonesia"),
+         InlineKeyboardButton("Malaysia", callback_data="Malaysia")],
+        [InlineKeyboardButton("Nepal", callback_data="Nepal"),
+         InlineKeyboardButton("Sri Lanka", callback_data="Sri Lanka"),
+         InlineKeyboardButton("Pakistan", callback_data="Pakistan")],
         [InlineKeyboardButton("Other", callback_data="Other")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -458,7 +464,7 @@ def main() -> None:
         entry_points=[CommandHandler("start", start)],
         states={
             SELECT_COUNTRY: [
-                CallbackQueryHandler(process_country, pattern='^(India|USA|UK|Canada|Australia|Germany|France|Brazil|Japan|Other)$'),
+                CallbackQueryHandler(process_country, pattern='^(India|USA|UK|Canada|Australia|Germany|France|Brazil|Japan|Bhutan|Indonesia|Malaysia|Nepal|Sri Lanka|Pakistan|Other)$'),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, invalid_country_input),
             ],
             ENTER_AGE: [
@@ -478,8 +484,8 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(find_match_callback, pattern='^find_match$'))
     application.add_handler(CallbackQueryHandler(restart_profile_callback, pattern='^restart_profile$'))
 
-    # Handle all other messages for forwarding
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.ANIMATION | filters.LOCATION | filters.CONTACT | filters.POLL | filters.STICKER, forward_message))
+    # Handle all other messages for forwarding (corrected filter here)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND | filters.ALL_MEDIA | filters.LOCATION | filters.CONTACT | filters.POLL, forward_message))
 
     # Set up post-init and post-shutdown callbacks
     application.post_init(post_init)
@@ -499,4 +505,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
