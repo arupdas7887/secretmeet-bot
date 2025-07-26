@@ -50,10 +50,12 @@ async def create_user(user_id: int, username: str, full_name: str):
             "created_at": datetime.now()
         }
         logger.info(f"User {user_id} created in memory.")
+    # If user exists, ensure username/full_name are up-to-date
     else:
         user_data_store[user_id]["username"] = username
         user_data_store[user_id]["full_name"] = full_name
         logger.info(f"User {user_id} already exists in memory, updated info.")
+
 
 async def update_user(user_id: int, **kwargs):
     if user_id in user_data_store:
@@ -116,6 +118,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def find_next_match_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Initiates the search for a new partner."""
     user_id = update.effective_user.id
+    username = update.effective_user.username
+    full_name = update.effective_user.full_name
+
+    # Ensure user data exists before attempting to update it for search
+    # This addresses the "Attempted to update non-existent user" warning in logs
+    await create_user(user_id, username, full_name) 
+
     await update_user(user_id, in_search=True) # Use update_user for consistency
     if update.callback_query:
         await update.callback_query.answer()
@@ -358,7 +367,7 @@ async def matching_scheduler(application: Application):
         
         users_in_search = [
             user for user_id, user in user_data_store.items()
-            if user["in_search"] and user["match_id"] is None
+            if user["in_search"] and user["match_id"] is None # <--- Key conditions
         ]
         
         if len(users_in_search) < 2:
