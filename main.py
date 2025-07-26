@@ -2,6 +2,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime
+import os # <--- ADDED THIS LINE
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
