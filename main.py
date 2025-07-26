@@ -121,11 +121,22 @@ async def find_next_match_command(update: Update, context: ContextTypes.DEFAULT_
     username = update.effective_user.username
     full_name = update.effective_user.full_name
 
-    # Ensure user data exists before attempting to update it for search
-    # This addresses the "Attempted to update non-existent user" warning in logs
+    # Ensure user data exists and retrieve it
     await create_user(user_id, username, full_name) 
+    user_data = await get_user(user_id) # Fetch current user data
 
-    await update_user(user_id, in_search=True) # Use update_user for consistency
+    if user_data and user_data.get('match_id'): # Check if user is already in a chat
+        message_text = "You are already in a chat. Please stop your current chat first to find a new match."
+        if update.callback_query:
+            await update.callback_query.answer(text=message_text, show_alert=True)
+            # No edit_message_text here, just an alert to avoid replacing the active chat info
+        else:
+            await update.message.reply_text(message_text, reply_markup=get_command_reply_keyboard())
+        logger.info(f"User {user_id} attempted to find a match while already in chat {user_data['match_id']}.")
+        return # Exit the function if already in a chat
+    
+    # If not in a chat, proceed with searching
+    await update_user(user_id, in_search=True) 
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text("Searching for a partner now...")
@@ -253,23 +264,23 @@ async def end_chat_for_users(user1_id: int, user2_id: int, application_bot: Appl
     try:
         # Send distinct messages based on initiator
         if initiator_id == user1_id:
-            await application_bot.send_message(chat_id=user1_id, text=initiator_text)
-            await application_bot.send_message(chat_id=user2_id, text=partner_text)
+            await application_bot.bot.send_message(chat_id=user1_id, text=initiator_text)
+            await application_bot.bot.send_message(chat_id=user2_id, text=partner_text)
         elif initiator_id == user2_id:
-            await application_bot.send_message(chat_id=user2_id, text=initiator_text)
-            await application_bot.send_message(chat_id=user1_id, text=partner_text)
+            await application_bot.bot.send_message(chat_id=user2_id, text=initiator_text)
+            await application_bot.bot.send_message(chat_id=user1_id, text=partner_text)
         else: # No specific initiator (e.g., error in forwarding)
-            await application_bot.send_message(chat_id=user1_id, text=initiator_text)
-            await application_bot.send_message(chat_id=user2_id, text=partner_text)
+            await application_bot.bot.send_message(chat_id=user1_id, text=initiator_text)
+            await application_bot.bot.send_message(chat_id=user2_id, text=partner_text)
 
         # Send feedback option to BOTH users
         feedback_msg = "If you wish, leave your feedback about your partner. It will help us find better partners for you in the future."
-        await application_bot.send_message(
+        await application_bot.bot.send_message(
             chat_id=user1_id,
             text=feedback_msg,
             reply_markup=get_post_chat_feedback_keyboard()
         )
-        await application_bot.send_message(
+        await application_bot.bot.send_message(
             chat_id=user2_id,
             text=feedback_msg,
             reply_markup=get_post_chat_feedback_keyboard()
