@@ -1,9 +1,3 @@
-import asyncio
-import logging
-import os
-import uuid
-from datetime import datetime
-
 import asyncpg
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -20,7 +14,7 @@ from telegram.ext import (
 # For Render deployment, these should ideally be set as environment variables.
 # But for simplicity, we're keeping them hardcoded as per previous instructions.
 BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk"  # REPLACE WITH YOUR ACTUAL BOT TOKEN
-DATABASE_URL = "postgres://secretmeet_bot_user:d83U1t8UqG9d0n5pYfC8b4Fh5j7x4I0v@dpg-cpt28oql6cac739097qg-a.oregon-postgres.render.com/secretmeet_bot" # REPLACE WITH YOUR ACTUAL DATABASE URL
+DATABASE_URL = "postgres://secretmeet_bot_user:d83U1t8UqG9d0n5pYfC8b4Fh5j7x4I0v@dpg-cpt28oql6cac739097qg-a.oregon-postgres.render.com/secretmeet_bot?sslmode=require" # REPLACE WITH YOUR ACTUAL DATABASE URL
 
 # Enable logging
 logging.basicConfig(
@@ -497,6 +491,5 @@ def main() -> None:
     else:
         logger.info("Running with Polling (WEBHOOK_URL not set).")
         application.run_polling(poll_interval=3)
-
 if __name__ == "__main__":
     main()
