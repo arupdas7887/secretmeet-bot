@@ -1,195 +1,205 @@
+# full_bot.py
 import logging
 import random
+import re
 import string
 import time
 from datetime import datetime, timedelta
-from collections import defaultdict
-from flask import Flask
-from threading import Thread
 
-from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup,
-                      ReplyKeyboardMarkup, KeyboardButton)
-from telegram.ext import (ApplicationBuilder, CommandHandler, MessageHandler,
-                          filters, CallbackContext, CallbackQueryHandler,
-                          ConversationHandler, ContextTypes)
+from flask import Flask, request
+from telegram import (BotCommand, InlineKeyboardButton, InlineKeyboardMarkup,
+                      ReplyKeyboardMarkup, ReplyKeyboardRemove, Update)
+from telegram.constants import ChatAction
+from telegram.ext import (Application, CallbackContext, CallbackQueryHandler,
+                          CommandHandler, ContextTypes, MessageHandler,
+                          filters)
 
-# ===== CONFIGURATION =====
-TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk"
-popular_countries = ["Spain", "Saudi Arabia", "UAE", "Iran", "Iraq", "Thailand",
-                     "Vietnam", "Philippines", "Nigeria", "South Africa",
-                     "Kenya", "Colombia", "Argentina"]
-all_countries = popular_countries  # Add more if needed
-ages = list(range(14, 51))
+# === CONFIGURATION ===
+BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk"
+BOT_USERNAME = "secretmeet_bot"
+WEBHOOK_URL = "https://secretmeet-bot.onrender.com"
+PORT = 10000
 
-# ===== LOGGING =====
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    level=logging.INFO)
-logger = logging.getLogger(__name__)
+# === FLASK APP ===
+flask_app = Flask(__name__)
 
-# ===== GLOBAL VARIABLES =====
+# === BOT STATE ===
 users = {}
 waiting_users = []
-chats = {}
-referrals = defaultdict(list)
-gender_unlock = defaultdict(lambda: {"count": 0, "expires": None})
+active_chats = {}
+referrals = {}
+referral_unlocked = {}
+last_referral_time = {}
+secret_rooms = {}
+user_profiles = {}
 feedback = {}
-rooms = {}
-filtered_words = ["badword1", "badword2"]
+personality_tags = {}
 
-# ===== FLASK FOR RENDER KEEP-ALIVE =====
-app = Flask('')
-@app.route('/')
-def home():
-    return "Bot is running!"
+popular_countries = ["Spain", "Saudi Arabia", "UAE", "Iran", "Iraq",
+                     "Thailand", "Vietnam", "Philippines", "Nigeria",
+                     "South Africa", "Kenya", "Colombia", "Argentina"]
 
-Thread(target=lambda: app.run(host="0.0.0.0", port=8080)).start()
+GENDER_OPTIONS = ["Male", "Female"]
+AGE_RANGE = list(range(14, 51))
 
-# ===== UTILITIES =====
-def typing_action(context: CallbackContext, chat_id):
-    context.bot.send_chat_action(chat_id=chat_id, action="typing")
-    time.sleep(random.uniform(0.5, 1.5))
+# === UTILITIES ===
+def generate_code():
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
-def paginate_buttons(items, prefix, per_page=6):
-    pages = [items[i:i + per_page] for i in range(0, len(items), per_page)]
-    keyboards = []
-    for i, page in enumerate(pages):
-        buttons = [InlineKeyboardButton(item, callback_data=f"{prefix}:{item}") for item in page]
-        nav = []
-        if i > 0:
-            nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"{prefix}_page:{i - 1}"))
-        if i < len(pages) - 1:
-            nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"{prefix}_page:{i + 1}"))
-        keyboards.append(buttons + nav)
-    return keyboards
+def send_typing(context: CallbackContext, chat_id):
+    context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    time.sleep(1.5)
 
-def build_keyboard(page_buttons):
-    return InlineKeyboardMarkup([[btn] for btn in page_buttons])
-
-# ===== HANDLERS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     users[user_id] = {}
-    page_buttons = paginate_buttons(popular_countries, "country")
-    await update.message.reply_text("🌍 Select your country:", reply_markup=build_keyboard(page_buttons[0]))
-    context.user_data['page'] = page_buttons
-    context.user_data['page_num'] = 0
 
-def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [[InlineKeyboardButton(country, callback_data=f"country_{country}")]
+                for country in popular_countries[:5]]
+    keyboard.append([InlineKeyboardButton("More", callback_data="country_more")])
+
+    await update.message.reply_text("🌍 Choose your country:",
+                                    reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    data = query.data
+    await query.answer()
     user_id = query.from_user.id
 
-    if data.startswith("country:"):
-        country = data.split(":")[1]
-        users[user_id]['country'] = country
-        age_buttons = paginate_buttons([str(a) for a in ages], "age")
-        context.user_data['age_pages'] = age_buttons
-        context.user_data['age_page_num'] = 0
-        return query.edit_message_text("🎂 Select your age:", reply_markup=build_keyboard(age_buttons[0]))
+    if query.data.startswith("country_"):
+        country = query.data.split("_")[1]
+        users[user_id]["country"] = country
+        await send_age_selection(query, user_id)
 
-    elif data.startswith("age:"):
-        age = int(data.split(":")[1])
-        users[user_id]['age'] = age
-        gender_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("👦 Male", callback_data="gender:Male"),
-             InlineKeyboardButton("👧 Female", callback_data="gender:Female")]
-        ])
-        return query.edit_message_text("🚻 Select your gender:", reply_markup=gender_kb)
+    elif query.data.startswith("age_"):
+        age = int(query.data.split("_")[1])
+        users[user_id]["age"] = age
+        await send_gender_selection(query, user_id)
 
-    elif data.startswith("gender:"):
-        gender = data.split(":")[1]
-        users[user_id]['gender'] = gender
-        kb = ReplyKeyboardMarkup([
-            [KeyboardButton("🔍 Find a Partner")],
-            [KeyboardButton("🎯 Search by Gender")]
-        ], resize_keyboard=True)
-        return query.edit_message_text("✅ Setup complete!", reply_markup=kb)
+    elif query.data in GENDER_OPTIONS:
+        users[user_id]["gender"] = query.data
+        await query.message.reply_text("✅ Setup complete!",
+            reply_markup=ReplyKeyboardMarkup([
+                ["🔍 Find a Partner"],
+                ["🎯 Search by Gender"]
+            ], resize_keyboard=True))
 
-    elif data.startswith("country_page"):
-        page = int(data.split(":")[1])
-        pages = context.user_data['page']
-        return query.edit_message_reply_markup(reply_markup=build_keyboard(pages[page]))
+    elif query.data == "country_more":
+        keyboard = [[InlineKeyboardButton(c, callback_data=f"country_{c}")]
+                    for c in popular_countries[5:]]
+        await query.message.edit_text("🌍 Choose your country:",
+                                      reply_markup=InlineKeyboardMarkup(keyboard))
 
-    elif data.startswith("age_page"):
-        page = int(data.split(":")[1])
-        pages = context.user_data['age_pages']
-        return query.edit_message_reply_markup(reply_markup=build_keyboard(pages[page]))
+def create_paginated_keyboard(options, prefix, per_page=8):
+    keyboard = []
+    for i in range(0, len(options), per_page):
+        page = options[i:i + per_page]
+        row = [InlineKeyboardButton(str(opt), callback_data=f"{prefix}_{opt}") for opt in page]
+        keyboard.append(row)
+    return keyboard
+
+async def send_age_selection(query, user_id):
+    keyboard = create_paginated_keyboard(AGE_RANGE, "age", per_page=6)
+    await query.message.reply_text("🎂 Select your age:",
+                                   reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def send_gender_selection(query, user_id):
+    keyboard = [[InlineKeyboardButton("Male", callback_data="Male"),
+                 InlineKeyboardButton("Female", callback_data="Female")]]
+    await query.message.reply_text("🚻 Select your gender:",
+                                   reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id in chats:
-        return await update.message.reply_text("You're already in a chat. Use /disconnect first.")
+    if user_id in active_chats:
+        await update.message.reply_text("❗You're already in a chat.")
+        return
+    if waiting_users:
+        partner_id = waiting_users.pop(0)
+        active_chats[user_id] = partner_id
+        active_chats[partner_id] = user_id
 
-    for partner_id in waiting_users:
-        if partner_id != user_id and partner_id not in chats:
-            chats[user_id] = partner_id
-            chats[partner_id] = user_id
-            waiting_users.remove(partner_id)
-            await context.bot.send_message(partner_id, "✅ Partner found! Say hi!")
-            await context.bot.send_message(user_id, "✅ Partner found! Say hi!")
-            return
-
-    waiting_users.append(user_id)
-    await update.message.reply_text("🔎 Searching for a partner...")
+        await context.bot.send_message(partner_id, "✅ You’re now connected! Say hi!")
+        await context.bot.send_message(user_id, "✅ You’re now connected! Say hi!")
+    else:
+        waiting_users.append(user_id)
+        await update.message.reply_text("⏳ Waiting for a partner...")
 
 async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    partner_id = chats.pop(user_id, None)
-    if partner_id:
-        chats.pop(partner_id, None)
-        await context.bot.send_message(partner_id, "❗Your partner has left the chat.")
-        await update.message.reply_text("You have left the chat.")
-    elif user_id in waiting_users:
-        waiting_users.remove(user_id)
-        await update.message.reply_text("❌ You left the waiting queue.")
-    else:
-        await update.message.reply_text("You're not in a chat.")
+    if user_id not in active_chats:
+        await update.message.reply_text("❗You are not in a chat.")
+        return
+
+    partner_id = active_chats.pop(user_id)
+    active_chats.pop(partner_id, None)
+
+    await context.bot.send_message(partner_id, "❗Your partner has left the chat.")
+    await context.bot.send_message(user_id, "❌ You have left the chat.")
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    msg = update.message.text
-    for word in filtered_words:
-        if word in msg.lower():
-            return await update.message.reply_text("⚠️ Inappropriate content blocked.")
-    if user_id in chats:
-        partner_id = chats[user_id]
-        typing_action(context, partner_id)
-        await context.bot.send_message(partner_id, msg)
+    if user_id in active_chats:
+        partner_id = active_chats[user_id]
+        send_typing(context, partner_id)
+        await context.bot.send_message(partner_id, update.message.text)
     else:
-        await update.message.reply_text("❌ You're not in a chat.")
+        await update.message.reply_text("❗You're not connected. Press 🔍 Find a Partner")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Available commands:\n/start\n/connect\n/disconnect\n/help")
+    await update.message.reply_text(
+        "/start - Setup your profile\n"
+        "/connect - Find a chat partner\n"
+        "/disconnect - Leave current chat\n"
+        "/referral - Invite & unlock features\n"
+        "/profile - View or edit your info\n"
+        "/help - Show this help menu"
+    )
 
-# ===== MAIN =====
-if __name__ == '__main__':
-    app_bot = ApplicationBuilder().token(TOKEN).build()
+async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    data = users.get(user_id, {})
+    await update.message.reply_text(
+        f"🌍 Country: {data.get('country', '-') }\n"
+        f"🎂 Age: {data.get('age', '-') }\n"
+        f"🚻 Gender: {data.get('gender', '-') }"
+    )
 
-    app_bot.add_handler(CommandHandler("start", start))
-    app_bot.add_handler(CommandHandler("connect", connect))
-    app_bot.add_handler(CommandHandler("disconnect", disconnect))
-    app_bot.add_handler(CommandHandler("help", help_command))
-    app_bot.add_handler(CallbackQueryHandler(handle_callback))
-    app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-
-    from flask import Flask, request
-import os
-
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "Bot is live."
-
-@app.route(f"/webhook/7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk", methods=["POST"])
+# === FLASK ROUTES ===
+@flask_app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
+    update = Update.de_json(request.get_json(force=True), application.bot)
     application.update_queue.put(update)
     return "ok"
 
-if __name__ == "__main__":
-    bot.delete_webhook()
-    bot.set_webhook(url="https://your-app-name.onrender.com/webhook/7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk")
-    print("Webhook set.")
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-        
+@flask_app.route("/")
+def index():
+    return "Bot is live!"
+
+# === MAIN ===
+logging.basicConfig(level=logging.INFO)
+application = Application.builder().token(BOT_TOKEN).build()
+
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("connect", connect))
+application.add_handler(CommandHandler("disconnect", disconnect))
+application.add_handler(CommandHandler("profile", profile))
+application.add_handler(CommandHandler("help", help_command))
+application.add_handler(CallbackQueryHandler(handle_callback))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+
+application.bot.set_my_commands([
+    BotCommand("start", "Start the bot"),
+    BotCommand("connect", "Find a partner"),
+    BotCommand("disconnect", "Leave chat"),
+    BotCommand("profile", "Show your profile"),
+    BotCommand("help", "Help menu")
+])
+
+application.run_webhook(
+    listen="0.0.0.0",
+    port=PORT,
+    url_path=BOT_TOKEN,
+    webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
+    allowed_updates=Update.ALL_TYPES,
+    flask_app=flask_app
