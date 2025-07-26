@@ -4,7 +4,9 @@ import uuid
 from datetime import datetime
 import os
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton, ChatAction # Import ChatAction
+# --- MODIFIED: Import ChatAction from telegram.constants ---
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram.constants import ChatAction 
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -114,7 +116,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def find_next_match_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Initiates the search for a new partner."""
     user_id = update.effective_user.id
-    await set_user_in_search(user_id, True)
+    await update_user(user_id, in_search=True) # Use update_user for consistency
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text("Searching for a partner now...")
@@ -317,7 +319,6 @@ async def send_match_found_message(user1_id, user2_id, application_bot):
             user_data_store[user2_id]['in_search'] = True
             user_data_store[user2_id]['match_id'] = None
 
-# --- MODIFIED: matching_scheduler interval to 1 second ---
 async def matching_scheduler(application: Application):
     """Periodically checks for and matches users in the search queue."""
     while True:
@@ -337,7 +338,6 @@ async def matching_scheduler(application: Application):
             
             await send_match_found_message(user1['user_id'], user2['user_id'], application.bot)
 
-# --- MODIFIED forward_message function for anonymity and blocking contacts ---
 async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Forwards messages anonymously between matched users, blocking specific content."""
     user_id = update.effective_user.id
@@ -411,7 +411,6 @@ async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     else:
         await update.message.reply_text("You are not currently in a chat. Use the buttons below to find a partner.")
 
-# --- MODIFIED: post_init_callback to set bot commands ---
 async def post_init_callback(application: Application) -> None:
     """Callback run after the bot starts, to set up background tasks and bot commands."""
     logger.info("Running post_init_callback (no database init).")
@@ -474,7 +473,7 @@ def main() -> None:
     application.add_handler(CommandHandler("next", find_next_match_command))
     application.add_handler(CommandHandler("help", help_command))
     
-    # --- NEW: Message Handlers for the persistent reply keyboard buttons ---
+    # Message Handlers for the persistent reply keyboard buttons
     application.add_handler(MessageHandler(filters.Regex("^🔍 Find a Match$"), find_next_match_command))
     application.add_handler(MessageHandler(filters.Regex("^🛑 Stop Chat$"), stop_chat))
 
