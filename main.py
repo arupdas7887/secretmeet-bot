@@ -14,12 +14,13 @@ from telegram.ext import (
     CallbackQueryHandler,
     MessageHandler,
     filters,
+    Application
 )
 
 # Configuration
 # For Render deployment, these should ideally be set as environment variables.
 # But for simplicity, we're keeping them hardcoded as per previous instructions.
-BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk"  # REPLACE WITH YOUR ACTUAL BOT TOKEN
+BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk" # REPLACE WITH YOUR ACTUAL BOT TOKEN
 DATABASE_URL = "postgresql://secret_meet_bot_user:i3Dqcwcwyvn5zbIspVQvtlRTiqnMKLDI@dpg-d22d64h5pdvs738ri6i0-a.oregon-postgres.render.com/secret_meet_bot" # REPLACE WITH YOUR ACTUAL DATABASE URL
 
 # Enable logging
@@ -30,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 # Conversation states
 SELECT_COUNTRY, ENTER_AGE, SELECT_GENDER = range(3)
-# Note: SELECT_PARTNER_GENDER state is REMOVED as requested.
 
 # Database connection pool
 db_pool = None
@@ -52,7 +52,7 @@ async def init_db():
                 country TEXT,
                 age INT,
                 gender TEXT,
-                preferred_gender TEXT, -- Still keep column for existing data/future expansion
+                preferred_gender TEXT,
                 in_search BOOLEAN DEFAULT FALSE,
                 match_id UUID,
                 last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -60,8 +60,6 @@ async def init_db():
             )
             """
         )
-        # --- NEW ADDITION START ---
-        # Add column if it doesn't exist (for existing tables that might not have it)
         await conn.execute(
             """
             DO $$ BEGIN
@@ -69,8 +67,6 @@ async def init_db():
             END $$;
             """
         )
-        # --- NEW ADDITION END ---
-        # Add index to `in_search` for faster lookups
         await conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_users_in_search ON users (in_search);
@@ -165,7 +161,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             f"Welcome back, {full_name}! Your profile is complete. What would you like to do?",
             reply_markup=reply_markup,
         )
-        return ConversationHandler.END # End the conversation but wait for callback query
+        return ConversationHandler.END
 
     # Otherwise, start profile setup
     keyboard = [
@@ -205,7 +201,6 @@ async def process_country(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def invalid_country_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Please select a country from the options provided.")
-    # Remain in current state, or resend options
     keyboard = [
         [InlineKeyboardButton("India", callback_data="India"),
          InlineKeyboardButton("USA", callback_data="USA"),
@@ -236,7 +231,7 @@ async def process_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     user_id = update.effective_user.id
     try:
         age = int(update.message.text)
-        if not (13 <= age <= 99): # Example age range
+        if not (13 <= age <= 99):
             await update.message.reply_text("Please enter a valid age between 13 and 99.")
             return ENTER_AGE
         await update_user(user_id, age=age)
@@ -259,11 +254,10 @@ async def process_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = query.from_user.id
     gender = query.data
 
-    await update_user(user_id, gender=gender, in_search=True) # Set in_search directly
+    await update_user(user_id, gender=gender, in_search=True)
     await query.edit_message_text(f"You selected {gender}. Searching for a match now...")
     logger.info(f"User {user_id} selected gender {gender} and is now in search.")
-    # No longer asking for preferred gender, directly go to "searching" or end.
-    return ConversationHandler.END # End conversation after setting in_search
+    return ConversationHandler.END
 
 async def find_match_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -273,8 +267,6 @@ async def find_match_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await set_user_in_search(user_id, True)
     await query.edit_message_text("Searching for a match now...")
     logger.info(f"User {user_id} clicked Find a Match.")
-    # The matching_scheduler will pick them up
-
     return ConversationHandler.END
 
 async def restart_profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -282,11 +274,9 @@ async def restart_profile_callback(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     user_id = query.from_user.id
 
-    # Reset user's profile data
     await update_user(user_id, country=None, age=None, gender=None, preferred_gender=None, in_search=False, match_id=None)
     logger.info(f"User {user_id} restarted profile.")
 
-    # Restart the conversation from country selection
     keyboard = [
         [InlineKeyboardButton("India", callback_data="India"),
          InlineKeyboardButton("USA", callback_data="USA"),
@@ -319,7 +309,6 @@ async def end_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if user_data and user_data['match_id']:
         match_id = user_data['match_id']
         async with db_pool.acquire() as conn:
-            # Clear match for both users
             await conn.execute(
                 "UPDATE users SET in_search = FALSE, match_id = NULL WHERE match_id = $1", match_id
             )
@@ -328,7 +317,6 @@ async def end_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         await update.message.reply_text("You are not currently in a chat or searching.")
 
-    # Offer to restart or find new match
     keyboard = [
         [InlineKeyboardButton("🔍 Find a Match", callback_data="find_match")],
         [InlineKeyboardButton("🔄 Restart Profile", callback_data="restart_profile")],
@@ -341,9 +329,6 @@ async def end_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def send_match_found_message(user1_id, user2_id, context: ContextTypes.DEFAULT_TYPE):
-    user1_obj = await context.bot.get_chat(user1_id)
-    user2_obj = await context.bot.get_chat(user2_id)
-
     match_id = uuid.uuid4()
     async with db_pool.acquire() as conn:
         await conn.execute(
@@ -363,17 +348,16 @@ async def send_match_found_message(user1_id, user2_id, context: ContextTypes.DEF
         logger.info(f"Match {match_id} found between {user1_id} and {user2_id}.")
     except Exception as e:
         logger.error(f"Error sending match found message: {e}")
-        # Revert match status if messages failed
         async with db_pool.acquire() as conn:
             await conn.execute(
                 "UPDATE users SET in_search = TRUE, match_id = NULL WHERE user_id IN ($1, $2)",
                 user1_id, user2_id
             )
 
-async def matching_scheduler(application: ApplicationBuilder):
+async def matching_scheduler(application: Application):
     """Periodically tries to match users."""
     while True:
-        await asyncio.sleep(15)  # Check every 15 seconds
+        await asyncio.sleep(15)
         if not db_pool:
             logger.warning("Database pool not initialized in scheduler.")
             continue
@@ -393,14 +377,12 @@ async def matching_scheduler(application: ApplicationBuilder):
             for j in range(i + 1, len(users_in_search)):
                 user2 = users_in_search[j]
 
-                # Ensure users are not already matched or self-matching
                 if user1['user_id'] == user2['user_id']:
                     continue
 
-                # Basic opposite gender matching logic
                 if (user1['gender'] == 'male' and user2['gender'] == 'female') or \
                    (user1['gender'] == 'female' and user2['gender'] == 'male') or \
-                   (user1['gender'] == 'other' or user2['gender'] == 'other'): # 'Other' can match with anyone
+                   (user1['gender'] == 'other' or user2['gender'] == 'other'):
                     matched_pair = (user1['user_id'], user2['user_id'])
                     break
             if matched_pair:
@@ -428,7 +410,6 @@ async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if matched_users:
             partner_id = matched_users[0]['user_id']
             try:
-                # Forward all types of messages (text, photo, video, etc.)
                 await context.bot.forward_message(
                     chat_id=partner_id,
                     from_chat_id=update.effective_chat.id,
@@ -438,33 +419,27 @@ async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             except Exception as e:
                 logger.error(f"Error forwarding message from {user_id} to {partner_id}: {e}")
                 await update.message.reply_text("Could not send your message to your partner. They might have left or blocked the bot.")
-                # Automatically end chat if forwarding fails consistently (optional, for robustness)
                 await end_match(update, context)
         else:
             await update.message.reply_text("You are not currently in a chat. Send /start to find a partner.")
-            await remove_user_from_search(user_id) # Ensure user is out of search if match_id is set but partner not found
+            await remove_user_from_search(user_id)
     else:
         await update.message.reply_text("You are not currently in a chat. Send /start to find a partner.")
 
+
+async def post_init_callback(application: Application) -> None:
+    """Callback function to initialize database and start scheduler after Application is built."""
+    logger.info("Running post_init_callback...")
+    await init_db()
+    application.create_task(matching_scheduler(application))
+    logger.info("post_init_callback finished.")
 
 def main() -> None:
     """Start the bot."""
     webhook_url = os.getenv("WEBHOOK_URL")
 
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init_callback).build()
 
-    # --- Directly initialize DB and start scheduler here ---
-    # These operations are usually done in post_init, but due to env issues,
-    # we're running them directly within the main function before starting the bot loop.
-    async def startup_tasks():
-        await init_db()
-        application.create_task(matching_scheduler(application))
-
-    # Run the startup tasks immediately
-    asyncio.run(startup_tasks())
-    # --- End of direct initialization ---
-
-    # Handlers for conversation states
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -478,10 +453,9 @@ def main() -> None:
             SELECT_GENDER: [
                 CallbackQueryHandler(process_gender, pattern='^(male|female|other)$'),
             ],
-            # SELECT_PARTNER_GENDER state and its handlers are removed
         },
-        fallbacks=[CommandHandler("start", start)], # If user gets stuck, can restart
-        allow_reentry=True, # Allows users to re-enter conversation handler
+        fallbacks=[CommandHandler("start", start)],
+        allow_reentry=True,
     )
 
     application.add_handler(conv_handler)
@@ -489,12 +463,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(find_match_callback, pattern='^find_match$'))
     application.add_handler(CallbackQueryHandler(restart_profile_callback, pattern='^restart_profile$'))
 
-    # Handle all other messages for forwarding (corrected filter here)
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_message))
-
-    # The post_init and post_shutdown callbacks are removed from here.
-    # The startup tasks are now run directly.
-    # The database connection close will happen when the process exits.
 
     if webhook_url:
         logger.info(f"Running with Webhook: {webhook_url}/{BOT_TOKEN}")
