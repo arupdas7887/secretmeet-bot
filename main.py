@@ -213,15 +213,26 @@ async def chat_feedback_report_start(update: Update, context: ContextTypes.DEFAU
 async def handle_specific_report_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handles the selection of a specific report reason and sends it anonymously."""
     query = update.callback_query
-    await query.answer()
+    await query.answer() # Acknowledge callback immediately
     user_id = query.from_user.id
     reason = query.data.replace('report_reason_', '').replace('_', ' ').title()
+    logger.info(f"User {user_id} selected report reason: {reason}") # Log the selected reason
 
     if reason == "Cancel":
-        await query.edit_message_text(
-            "Report cancelled. You can find a new partner using the buttons below.",
-            reply_markup=get_command_reply_keyboard() # Return to main reply keyboard
-        )
+        try:
+            await query.edit_message_text(
+                "Report cancelled.", # Minimal message for cancellation
+                reply_markup=None # Remove inline keyboard, relying on persistent keyboard
+            )
+            logger.info(f"User {user_id} report cancelled. Message edited.")
+        except Exception as e:
+            logger.error(f"Error editing message for report cancellation for user {user_id}: {e}")
+            # Fallback if editing fails: send a new message
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="Report cancelled, but there was an error updating the message.",
+                reply_markup=get_command_reply_keyboard()
+            )
         return ConversationHandler.END
     else:
         try:
@@ -229,18 +240,24 @@ async def handle_specific_report_reason(update: Update, context: ContextTypes.DE
                 chat_id=ADMIN_USER_ID,
                 text=f"Anonymous Chat Report - Category: {reason}"
             )
-            # Removed: await query.edit_message_text(f"Thank you! Your report for '{reason}' has been sent anonymously.")
             logger.info(f"Anonymous report received from {user_id} for reason: {reason}")
+            # Edit the existing inline message to a minimal acknowledgment and remove the keyboard
+            await query.edit_message_text(
+                "Report sent.", # Minimal acknowledgment
+                reply_markup=None # Remove the inline keyboard
+            )
+            logger.info(f"User {user_id} report sent. Message edited.")
         except Exception as e:
             logger.error(f"Failed to send anonymous report from {user_id} for reason {reason}: {e}")
-            await query.edit_message_text("There was an error sending your report. Please try again later.")
-        
-        # After sending report (or error), ensure persistent reply keyboard is shown
-        await context.bot.send_message(
-            chat_id=user_id,
-            text="You can find a new partner using the buttons below.", # This will be the only message after report
-            reply_markup=get_command_reply_keyboard()
-        )
+            # Fallback if editing fails: send a new message
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="There was an error sending your report or updating the message. Please try again later.",
+                reply_markup=get_command_reply_keyboard()
+            )
+
+        # The persistent ReplyKeyboardMarkup is expected to be visible after conversation ends.
+        # No additional message is sent for it.
         return ConversationHandler.END
 
 async def end_chat_for_users(user1_id: int, user2_id: int, application_bot: Application, initiator_id: int = None) -> None:
