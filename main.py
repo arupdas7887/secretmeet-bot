@@ -218,16 +218,16 @@ async def handle_specific_report_reason(update: Update, context: ContextTypes.DE
                 chat_id=ADMIN_USER_ID,
                 text=f"Anonymous Chat Report - Category: {reason}"
             )
-            await query.edit_message_text(f"Thank you! Your report for '{reason}' has been sent anonymously.")
+            # Removed: await query.edit_message_text(f"Thank you! Your report for '{reason}' has been sent anonymously.")
             logger.info(f"Anonymous report received from {user_id} for reason: {reason}")
         except Exception as e:
             logger.error(f"Failed to send anonymous report from {user_id} for reason {reason}: {e}")
             await query.edit_message_text("There was an error sending your report. Please try again later.")
         
-        # After sending report, ensure persistent reply keyboard is shown
+        # After sending report (or error), ensure persistent reply keyboard is shown
         await context.bot.send_message(
             chat_id=user_id,
-            text="You can find a new partner using the buttons below.",
+            text="You can find a new partner using the buttons below.", # This will be the only message after report
             reply_markup=get_command_reply_keyboard()
         )
         return ConversationHandler.END
@@ -248,7 +248,7 @@ async def end_chat_for_users(user1_id: int, user2_id: int, application_bot: Appl
         if user_id in user_data_store:
             user_data_store[user_id]['in_search'] = False
             user_data_store[user_id]['match_id'] = None
-            user_data_store[user_id]['last_active'] = datetime.now()
+            user_data_store[user_id]["last_active"] = datetime.now()
 
     try:
         # Send distinct messages based on initiator
@@ -295,9 +295,21 @@ async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if partner_id:
             await end_chat_for_users(user_id, partner_id, context.application, initiator_id=user_id)
             logger.info(f"Chat {match_id} stopped by user {user_id}.")
-        else: # User was in a match but partner not found (shouldn't happen often)
-            await remove_user_from_search(user_id)
-            await update.message.reply_text("You are not currently in a chat. Use the buttons below to find a partner.", reply_markup=get_command_reply_keyboard())
+        else:
+            # User had a match_id, but partner was not found (e.g., partner's state cleared, bot restarted)
+            await remove_user_from_search(user_id) # Clear initiator's state
+            await update.message.reply_text("You have left your previous conversation. Your partner may have disconnected.", reply_markup=get_command_reply_keyboard())
+            # Offer feedback specifically to the initiator, as partner is unknown or state is inconsistent
+            feedback_msg = "If you wish, you can still leave feedback about your last interaction."
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=feedback_msg,
+                    reply_markup=get_post_chat_feedback_keyboard()
+                )
+                logger.info(f"User {user_id} stopped chat with missing partner. Feedback offered to initiator.")
+            except Exception as e:
+                logger.error(f"Error offering feedback to {user_id} after partner missing: {e}")
     else:
         await update.message.reply_text("You are not currently in a chat or searching. Use the buttons below to find a partner.", reply_markup=get_command_reply_keyboard())
 
@@ -457,13 +469,12 @@ async def post_init_callback(application: Application) -> None:
     logger.info("Running post_init_callback (no database init).")
     application.bot_data['matching_scheduler_task'] = application.create_task(matching_scheduler(application))
     
-    # Set bot commands for the '/' menu
+    # Set bot commands for the '/' menu (Removed /sendfeedback as requested)
     await application.bot.set_my_commands([
         ("start", "Start the bot or return to the main menu"),
         ("help", "Get information on how to use the bot"),
         ("next", "Find a new partner (same as Find a Match button)"),
         ("stop", "Stop your current chat (same as Stop Chat button)"),
-        ("sendfeedback", "Send general feedback to the bot owner")
     ])
     logger.info("Bot commands set.")
     logger.info("post_init_callback finished.")
@@ -483,6 +494,9 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
 
     # General Feedback Conversation Handler (only accessible via command now)
+    # The entry point for this handler is still CommandHandler("sendfeedback", send_feedback_start)
+    # This means the functionality is still there if someone types /sendfeedback,
+    # but it won't be listed in the official bot commands menu.
     feedback_conv_handler = ConversationHandler(
         entry_points=[CommandHandler("sendfeedback", send_feedback_start)],
         states={
