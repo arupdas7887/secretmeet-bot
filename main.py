@@ -3,9 +3,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 import os
 import random
 
-TOKEN = "7673817380:
-
-AAH8NkM1A3kJzB9HVdWB1rkTIaMBeol6Nyk"
+TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWB1rkTIaMBeol6Nyk"
 
 users = {}
 waiting_users = []
