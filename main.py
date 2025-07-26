@@ -19,7 +19,7 @@ from telegram.ext import (
 # Configuration
 # For Render deployment, these should ideally be set as environment variables.
 # But for simplicity, we're keeping them hardcoded as per previous instructions.
-BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk" # REPLACE WITH YOUR ACTUAL BOT TOKEN
+BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk"  # REPLACE WITH YOUR ACTUAL BOT TOKEN
 DATABASE_URL = "postgresql://secret_meet_bot_user:i3Dqcwcwyvn5zbIspVQvtlRTiqnMKLDI@dpg-d22d64h5pdvs738ri6i0-a.oregon-postgres.render.com/secret_meet_bot" # REPLACE WITH YOUR ACTUAL DATABASE URL
 
 # Enable logging
@@ -60,6 +60,16 @@ async def init_db():
             )
             """
         )
+        # --- NEW ADDITION START ---
+        # Add column if it doesn't exist (for existing tables that might not have it)
+        await conn.execute(
+            """
+            DO $$ BEGIN
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS in_search BOOLEAN DEFAULT FALSE;
+            END $$;
+            """
+        )
+        # --- NEW ADDITION END ---
         # Add index to `in_search` for faster lookups
         await conn.execute(
             """
