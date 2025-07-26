@@ -1,10 +1,8 @@
 import asyncio
 import logging
-import os
 import uuid
 from datetime import datetime
 
-import asyncpg
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -19,7 +17,8 @@ from telegram.ext import (
 
 # Configuration
 BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk"
-DATABASE_URL = "postgresql://secret_meet_bot_user:i3Dqcwcwyvn5zbIspVQvtlRTiqnMKLDI@dpg-d22d64h5pdvs738ri6i0-a.oregon-postgres.render.com/secret_meet_bot"
+# DATABASE_URL is no longer used for in-memory storage
+# DATABASE_URL = "postgresql://secret_meet_bot_user:i3Dqcwcwyvn5zbIspVQvtlRTiqnMKLDI@dpg-d22d64h5pdvs738ri6i0-a.oregon-postgres.render.com/secret_meet_bot"
 
 # Enable logging
 logging.basicConfig(
@@ -27,114 +26,69 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Conversation states
-SELECT_COUNTRY, ENTER_AGE, SELECT_GENDER = range(3)
+# In-memory storage for user data
+# Data structure: {user_id: {username: "...", full_name: "...", in_search: bool, match_id: UUID}}
+user_data_store = {}
 
-# Database connection pool
-db_pool = None
-
-async def init_db():
-    global db_pool
-    if db_pool is None:
-        db_pool = await asyncpg.create_pool(DATABASE_URL)
-        logger.info("Database connection pool created successfully.")
-
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                username TEXT,
-                full_name TEXT,
-                country TEXT,
-                age INT,
-                gender TEXT,
-                preferred_gender TEXT,
-                in_search BOOLEAN DEFAULT FALSE,
-                match_id UUID,
-                last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        await conn.execute(
-            """
-            DO $$ BEGIN
-                ALTER TABLE users ADD COLUMN IF NOT EXISTS in_search BOOLEAN DEFAULT FALSE;
-            END $$;
-            """
-        )
-        await conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_users_in_search ON users (in_search);
-            """
-        )
-        logger.info("Database tables checked/created successfully.")
-
-async def close_db():
-    global db_pool
-    if db_pool:
-        await db_pool.close()
-        logger.info("Database connection pool closed.")
-
-# User Database Operations
+# User Data Operations (simulated with in-memory dict)
 async def get_user(user_id: int):
-    async with db_pool.acquire() as conn:
-        return await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
+    return user_data_store.get(user_id)
 
 async def create_user(user_id: int, username: str, full_name: str):
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO users (user_id, username, full_name) VALUES ($1, $2, $3) ON CONFLICT (user_id) DO NOTHING",
-            user_id, username, full_name
-        )
-        logger.info(f"User {user_id} created or already exists.")
+    if user_id not in user_data_store:
+        user_data_store[user_id] = {
+            "user_id": user_id,
+            "username": username,
+            "full_name": full_name,
+            "in_search": False,
+            "match_id": None,
+            "last_active": datetime.now(),
+            "created_at": datetime.now()
+        }
+        logger.info(f"User {user_id} created in memory.")
+    else:
+        # Update existing user's username/full_name if they change
+        user_data_store[user_id]["username"] = username
+        user_data_store[user_id]["full_name"] = full_name
+        logger.info(f"User {user_id} already exists in memory, updated info.")
 
 async def update_user(user_id: int, **kwargs):
-    async with db_pool.acquire() as conn:
-        set_parts = [f"{key} = ${i+2}" for i, key in enumerate(kwargs.keys())]
-        values = list(kwargs.values())
-        query = f"UPDATE users SET {', '.join(set_parts)} WHERE user_id = $1"
-        await conn.execute(query, user_id, *values)
-        logger.info(f"User {user_id} updated with {kwargs}.")
+    if user_id in user_data_store:
+        user_data_store[user_id].update(kwargs)
+        user_data_store[user_id]["last_active"] = datetime.now() # Update last active on any interaction
+        logger.info(f"User {user_id} updated in memory with {kwargs}.")
+    else:
+        logger.warning(f"Attempted to update non-existent user {user_id} in memory.")
 
 async def remove_user_from_search(user_id: int):
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE users SET in_search = FALSE, match_id = NULL WHERE user_id = $1", user_id
-        )
-        logger.info(f"User {user_id} removed from search queue.")
+    if user_id in user_data_store:
+        user_data_store[user_id]["in_search"] = False
+        user_data_store[user_id]["match_id"] = None
+        user_data_store[user_id]["last_active"] = datetime.now()
+        logger.info(f"User {user_id} removed from search queue in memory.")
 
 async def set_user_in_search(user_id: int, in_search: bool = True):
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE users SET in_search = $1, last_active = NOW() WHERE user_id = $2", in_search, user_id
-        )
-        logger.info(f"User {user_id} in_search set to {in_search}.")
+    if user_id in user_data_store:
+        user_data_store[user_id]["in_search"] = in_search
+        user_data_store[user_id]["last_active"] = datetime.now()
+        logger.info(f"User {user_id} in_search set to {in_search} in memory.")
 
 async def find_matching_users(user_id: int):
-    async with db_pool.acquire() as conn:
-        current_user = await get_user(user_id)
-        if not current_user:
-            return None
+    current_user = await get_user(user_id)
+    if not current_user:
+        return None
 
-        query = """
-        SELECT * FROM users
-        WHERE in_search = TRUE
-          AND user_id != $1
-        """
-        params = [user_id]
+    potential_matches = [
+        user for user_id, user in user_data_store.items()
+        if user["in_search"] and user["user_id"] != current_user["user_id"]
+    ]
+    
+    # Sort by last_active to try to match more active users, pick the oldest for fairness
+    potential_matches.sort(key=lambda x: x["last_active"])
 
-        if current_user['gender'] == 'male':
-            query += " AND gender = 'female'"
-        elif current_user['gender'] == 'female':
-            query += " AND gender = 'male'"
-        # If current_user['gender'] is 'other' or None, no additional gender filter applied.
-
-        query += " ORDER BY last_active ASC LIMIT 1"
-
-        potential_match = await conn.fetchrow(query, *params)
-        return potential_match
+    if potential_matches:
+        return potential_matches[0] # Return the first suitable match
+    return None
 
 # Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -143,113 +97,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     full_name = update.effective_user.full_name
 
     await create_user(user_id, username, full_name)
-    user_data = await get_user(user_id)
-
-    if user_data and user_data['country'] and user_data['age'] and user_data['gender']:
-        keyboard = [
-            [InlineKeyboardButton("🔍 Find a Match", callback_data="find_match")],
-            [InlineKeyboardButton("🔄 Restart Profile", callback_data="restart_profile")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            f"Welcome back, {full_name}! Your profile is complete. What would you like to do?",
-            reply_markup=reply_markup,
-        )
-        return ConversationHandler.END
-
+    
     keyboard = [
-        [InlineKeyboardButton("India", callback_data="India"),
-         InlineKeyboardButton("USA", callback_data="USA"),
-         InlineKeyboardButton("UK", callback_data="UK")],
-        [InlineKeyboardButton("Canada", callback_data="Canada"),
-         InlineKeyboardButton("Australia", callback_data="Australia"),
-         InlineKeyboardButton("Germany", callback_data="Germany")],
-        [InlineKeyboardButton("France", callback_data="France"),
-         InlineKeyboardButton("Brazil", callback_data="Brazil"),
-         InlineKeyboardButton("Japan", callback_data="Japan")],
-        [InlineKeyboardButton("Bhutan", callback_data="Bhutan"),
-         InlineKeyboardButton("Indonesia", callback_data="Indonesia"),
-         InlineKeyboardButton("Malaysia", callback_data="Malaysia")],
-        [InlineKeyboardButton("Nepal", callback_data="Nepal"),
-         InlineKeyboardButton("Sri Lanka", callback_data="Sri Lanka"),
-         InlineKeyboardButton("Pakistan", callback_data="Pakistan")],
-        [InlineKeyboardButton("Other", callback_data="Other")]
+        [InlineKeyboardButton("🔍 Find a Match", callback_data="find_match")],
+        [InlineKeyboardButton("🔄 Restart (Clear Match Status)", callback_data="restart_profile")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+
     await update.message.reply_text(
-        "Welcome to The Secret Meet! Let's find you a chat partner. First, please select your country:",
+        f"Welcome to The Secret Meet, {full_name}! What would you like to do?",
         reply_markup=reply_markup,
     )
-    return SELECT_COUNTRY
-
-async def process_country(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    country = query.data
-
-    await update_user(user_id, country=country)
-    await query.edit_message_text(f"You selected {country}. Now, please enter your age (e.g., 25):")
-    return ENTER_AGE
-
-async def invalid_country_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Please select a country from the options provided.")
-    keyboard = [
-        [InlineKeyboardButton("India", callback_data="India"),
-         InlineKeyboardButton("USA", callback_data="USA"),
-         InlineKeyboardButton("UK", callback_data="UK")],
-        [InlineKeyboardButton("Canada", callback_data="Canada"),
-         InlineKeyboardButton("Australia", callback_data="Australia"),
-         InlineKeyboardButton("Germany", callback_data="Germany")],
-        [InlineKeyboardButton("France", callback_data="France"),
-         InlineKeyboardButton("Brazil", callback_data="Brazil"),
-         InlineKeyboardButton("Japan", callback_data="Japan")],
-        [InlineKeyboardButton("Bhutan", callback_data="Bhutan"),
-         InlineKeyboardButton("Indonesia", callback_data="Indonesia"),
-         InlineKeyboardButton("Malaysia", callback_data="Malaysia")],
-        [InlineKeyboardButton("Nepal", callback_data="Nepal"),
-         InlineKeyboardButton("Sri Lanka", callback_data="Sri Lanka"),
-         InlineKeyboardButton("Pakistan", callback_data="Pakistan")],
-        [InlineKeyboardButton("Other", callback_data="Other")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "Please select your country using the buttons:",
-        reply_markup=reply_markup,
-    )
-    return SELECT_COUNTRY
-
-
-async def process_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
-    try:
-        age = int(update.message.text)
-        if not (13 <= age <= 99):
-            await update.message.reply_text("Please enter a valid age between 13 and 99.")
-            return ENTER_AGE
-        await update_user(user_id, age=age)
-
-        keyboard = [
-            [InlineKeyboardButton("Male", callback_data="male")],
-            [InlineKeyboardButton("Female", callback_data="female")],
-            [InlineKeyboardButton("Other", callback_data="other")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("What is your gender?", reply_markup=reply_markup)
-        return SELECT_GENDER
-    except ValueError:
-        await update.message.reply_text("Please enter a valid number for your age.")
-        return ENTER_AGE
-
-async def process_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    gender = query.data
-
-    await update_user(user_id, gender=gender, in_search=True)
-    await query.edit_message_text(f"You selected {gender}. Searching for a match now...")
-    logger.info(f"User {user_id} selected gender {gender} and is now in search.")
     return ConversationHandler.END
 
 async def find_match_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -259,7 +117,7 @@ async def find_match_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await set_user_in_search(user_id, True)
     await query.edit_message_text("Searching for a match now...")
-    logger.info(f"User {user_id} clicked Find a Match.")
+    logger.info(f"User {user_id} clicked Find a Match and is now in search.")
     return ConversationHandler.END
 
 async def restart_profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -267,33 +125,19 @@ async def restart_profile_callback(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     user_id = query.from_user.id
 
-    await update_user(user_id, country=None, age=None, gender=None, preferred_gender=None, in_search=False, match_id=None)
-    logger.info(f"User {user_id} restarted profile.")
+    await update_user(user_id, in_search=False, match_id=None)
+    logger.info(f"User {user_id} restarted/cleared match status.")
 
     keyboard = [
-        [InlineKeyboardButton("India", callback_data="India"),
-         InlineKeyboardButton("USA", callback_data="USA"),
-         InlineKeyboardButton("UK", callback_data="UK")],
-        [InlineKeyboardButton("Canada", callback_data="Canada"),
-         InlineKeyboardButton("Australia", callback_data="Australia"),
-         InlineKeyboardButton("Germany", callback_data="Germany")],
-        [InlineKeyboardButton("France", callback_data="France"),
-         InlineKeyboardButton("Brazil", callback_data="Brazil"),
-         InlineKeyboardButton("Japan", callback_data="Japan")],
-        [InlineKeyboardButton("Bhutan", callback_data="Bhutan"),
-         InlineKeyboardButton("Indonesia", callback_data="Indonesia"),
-         InlineKeyboardButton("Malaysia", callback_data="Malaysia")],
-        [InlineKeyboardButton("Nepal", callback_data="Nepal"),
-         InlineKeyboardButton("Sri Lanka", callback_data="Sri Lanka"),
-         InlineKeyboardButton("Pakistan", callback_data="Pakistan")],
-        [InlineKeyboardButton("Other", callback_data="Other")]
+        [InlineKeyboardButton("🔍 Find a Match", callback_data="find_match")],
+        [InlineKeyboardButton("🔄 Restart (Clear Match Status)", callback_data="restart_profile")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(
-        "Alright, let's reset your profile. Please select your country:",
+        "Your match status has been cleared. What would you like to do next?",
         reply_markup=reply_markup,
     )
-    return SELECT_COUNTRY
+    return ConversationHandler.END
 
 async def end_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -301,10 +145,14 @@ async def end_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if user_data and user_data['match_id']:
         match_id = user_data['match_id']
-        async with db_pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE users SET in_search = FALSE, match_id = NULL WHERE match_id = $1", match_id
-            )
+        
+        # Find both users in the match_id
+        for uid, udata in user_data_store.items():
+            if udata.get('match_id') == match_id:
+                udata['in_search'] = False
+                udata['match_id'] = None
+                udata['last_active'] = datetime.now()
+
         await update.message.reply_text("You have ended the chat. You are now out of the queue.")
         logger.info(f"Chat {match_id} ended by user {user_id}.")
     else:
@@ -312,7 +160,7 @@ async def end_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     keyboard = [
         [InlineKeyboardButton("🔍 Find a Match", callback_data="find_match")],
-        [InlineKeyboardButton("🔄 Restart Profile", callback_data="restart_profile")],
+        [InlineKeyboardButton("🔄 Restart (Clear Match Status)", callback_data="restart_profile")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
@@ -320,14 +168,16 @@ async def end_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=reply_markup,
     )
 
-
 async def send_match_found_message(user1_id, user2_id, context: ContextTypes.DEFAULT_TYPE):
     match_id = uuid.uuid4()
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE users SET in_search = FALSE, match_id = $1 WHERE user_id IN ($2, $3)",
-            match_id, user1_id, user2_id
-        )
+    
+    # Update users in in-memory store
+    if user1_id in user_data_store:
+        user_data_store[user1_id]['in_search'] = False
+        user_data_store[user1_id]['match_id'] = match_id
+    if user2_id in user_data_store:
+        user_data_store[user2_id]['in_search'] = False
+        user_data_store[user2_id]['match_id'] = match_id
 
     match_info_msg = (
         "🎉 Match found! 🎉\n\n"
@@ -341,50 +191,38 @@ async def send_match_found_message(user1_id, user2_id, context: ContextTypes.DEF
         logger.info(f"Match {match_id} found between {user1_id} and {user2_id}.")
     except Exception as e:
         logger.error(f"Error sending match found message: {e}")
-        async with db_pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE users SET in_search = TRUE, match_id = NULL WHERE user_id IN ($1, $2)",
-                user1_id, user2_id
-            )
+        # Revert search status if message fails
+        if user1_id in user_data_store:
+            user_data_store[user1_id]['in_search'] = True
+            user_data_store[user1_id]['match_id'] = None
+        if user2_id in user_data_store:
+            user_data_store[user2_id]['in_search'] = True
+            user_data_store[user2_id]['match_id'] = None
 
 async def matching_scheduler(application: Application):
     while True:
         await asyncio.sleep(15)
-        if not db_pool:
-            logger.warning("Database pool not initialized in scheduler.")
-            continue
-
-        async with db_pool.acquire() as conn:
-            users_in_search = await conn.fetch("SELECT user_id, gender FROM users WHERE in_search = TRUE")
         
-        logger.info(f"Attempting to find and match users... {len(users_in_search)} users in queue.")
+        users_in_search = [
+            user for user_id, user in user_data_store.items()
+            if user["in_search"] and user["match_id"] is None
+        ]
+        
+        logger.info(f"Attempting to find and match users... {len(users_in_search)} users in queue (in-memory).")
 
         if len(users_in_search) < 2:
             logger.info("Not enough users in queue for matching.")
             continue
 
-        matched_pair = None
-        for i in range(len(users_in_search)):
-            user1 = users_in_search[i]
-            for j in range(i + 1, len(users_in_search)):
-                user2 = users_in_search[j]
+        # Simple FIFO matching for now
+        if len(users_in_search) >= 2:
+            user1 = users_in_search[0]
+            user2 = users_in_search[1]
+            
+            await send_match_found_message(user1['user_id'], user2['user_id'], application.bot)
 
-                if user1['user_id'] == user2['user_id']:
-                    continue
-
-                if (user1['gender'] == 'male' and user2['gender'] == 'female') or \
-                   (user1['gender'] == 'female' and user2['gender'] == 'male') or \
-                   (user1['gender'] == 'other' or user2['gender'] == 'other'):
-                    matched_pair = (user1['user_id'], user2['user_id'])
-                    break
-            if matched_pair:
-                break
-
-        if matched_pair:
-            user1_id, user2_id = matched_pair
-            await send_match_found_message(user1_id, user2_id, application.bot)
         else:
-            logger.info("No suitable matches found in the current queue based on gender preferences.")
+            logger.info("No suitable matches found in the current queue.")
 
 
 async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -393,14 +231,14 @@ async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if user_data and user_data['match_id']:
         match_id = user_data['match_id']
-        async with db_pool.acquire() as conn:
-            matched_users = await conn.fetch(
-                "SELECT user_id FROM users WHERE match_id = $1 AND user_id != $2",
-                match_id, user_id
-            )
         
-        if matched_users:
-            partner_id = matched_users[0]['user_id']
+        partner_id = None
+        for uid, udata in user_data_store.items():
+            if udata.get('match_id') == match_id and uid != user_id:
+                partner_id = uid
+                break
+        
+        if partner_id:
             try:
                 await context.bot.forward_message(
                     chat_id=partner_id,
@@ -411,44 +249,33 @@ async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             except Exception as e:
                 logger.error(f"Error forwarding message from {user_id} to {partner_id}: {e}")
                 await update.message.reply_text("Could not send your message to your partner. They might have left or blocked the bot.")
-                await end_match(update, context)
+                await end_match(update, context) # Automatically end match if forwarding fails
         else:
             await update.message.reply_text("You are not currently in a chat. Send /start to find a partner.")
-            await remove_user_from_search(user_id)
+            await remove_user_from_search(user_id) # Ensure user is out of search
     else:
         await update.message.reply_text("You are not currently in a chat. Send /start to find a partner.")
 
-
 async def post_init_callback(application: Application) -> None:
-    logger.info("Running post_init_callback...")
-    await init_db()
+    logger.info("Running post_init_callback (no database init).")
+    # No database initialization needed for in-memory store
     application.bot_data['matching_scheduler_task'] = application.create_task(matching_scheduler(application))
     logger.info("post_init_callback finished.")
 
-
 async def post_shutdown_callback(application: Application) -> None:
-    logger.info("Bot application shutting down. Closing database pool.")
-    await close_db()
+    logger.info("Bot application shutting down (no database close).")
+    # No database closing needed for in-memory store
+    pass # No action needed for in-memory store shutdown
 
 def main() -> None:
     webhook_url = os.getenv("WEBHOOK_URL")
 
     application = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init_callback).post_shutdown(post_shutdown_callback).build()
 
+    # Conversation handler is simplified, as no profile setup states
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
-        states={
-            SELECT_COUNTRY: [
-                CallbackQueryHandler(process_country, pattern='^(India|USA|UK|Canada|Australia|Germany|France|Brazil|Japan|Bhutan|Indonesia|Malaysia|Nepal|Sri Lanka|Pakistan|Other)$'),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, invalid_country_input),
-            ],
-            ENTER_AGE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, process_age),
-            ],
-            SELECT_GENDER: [
-                CallbackQueryHandler(process_gender, pattern='^(male|female|other)$'),
-            ],
-        },
+        states={}, # No specific states as profile setup is removed
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
     )
