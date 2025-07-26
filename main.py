@@ -172,6 +172,24 @@ if __name__ == '__main__':
     app_bot.add_handler(CallbackQueryHandler(handle_callback))
     app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-    print("Bot is running...")
-    app_bot.run_polling()
+    from flask import Flask, request
+import os
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot is live."
+
+@app.route(f"/webhook/7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    application.update_queue.put(update)
+    return "ok"
+
+if __name__ == "__main__":
+    bot.delete_webhook()
+    bot.set_webhook(url="https://your-app-name.onrender.com/webhook/7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk")
+    print("Webhook set.")
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
         
