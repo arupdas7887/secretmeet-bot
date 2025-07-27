@@ -3,10 +3,9 @@ import logging
 import uuid
 from datetime import datetime, timedelta
 import os
-import json
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction 
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -18,129 +17,66 @@ from telegram.ext import (
     Application
 )
 
-# --- Firestore Imports ---
-import firebase_admin
-from firebase_admin import credentials
-import google.cloud.firestore
-from google.cloud.firestore import FieldFilter
+# Configuration
+BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk"
+ADMIN_USER_ID = 5246076255 # IMPORTANT: Replace with your actual Telegram User ID to receive feedback/reports!
 
-# --- Configuration ---
-BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk" # IMPORTANT: Confirm this is your actual Bot Token
-ADMIN_USER_ID = 5246076255 # IMPORTANT: Replace with your actual Telegram User ID!
-
-# --- Enable logging (MOVED TO HERE) ---
+# Enable logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- Firestore Setup ---
-# Initialize Firebase Admin SDK
-db = None # Will be initialized
-if not firebase_admin._apps:
-    try:
-        if os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON"):
-            # For Render deployment using the entire JSON string as an environment variable
-            cred_dict = json.loads(os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON"))
-            cred = credentials.Certificate(cred_dict)
-            logger.info("Firebase credentials loaded from GOOGLE_APPLICATION_CREDENTIALS_JSON environment variable.")
-        elif os.path.exists("service-account-key.json"): # For local testing (ensure this file exists)
-            cred = credentials.Certificate("service-account-key.json")
-            logger.info("Firebase credentials loaded from service-account-key.json file.")
-        else:
-            raise Exception("Firebase credentials not found. Set GOOGLE_APPLICATION_CREDENTIALS_JSON env var or place 'service-account-key.json' file.")
-
-        firebase_admin.initialize_app(cred)
-        db = google.cloud.firestore.Client()
-        logger.info("Firestore client initialized successfully.")
-    except Exception as e:
-        logger.error(f"Failed to initialize Firestore: {e}")
-        # In a real bot, you might want to exit or log a critical error.
-        # For now, `db` remains None and subsequent DB operations will fail.
-
-users_collection = db.collection('users') if db else None
-
+# In-memory storage for user data
+user_data_store = {}
 # In-memory storage for blocked users: {user_id: datetime_of_expiration}
-# IMPORTANT: This is NOT persistent across bot restarts. For persistence, move to Firestore.
 blocked_users = {}
-
 
 # Conversation states
 FEEDBACK_MESSAGE = 1
-REPORT_REASON_SELECTION = 2
-SUPPORT_MESSAGE = 3
+REPORT_REASON_SELECTION = 2 # State for selecting report reasons
+SUPPORT_MESSAGE = 3 # NEW: State for user support messages
 
-# --- User Data Operations (Firestore-based) ---
+# User Data Operations (simulated with in-memory dict)
 async def get_user(user_id: int):
-    """Retrieves user data from Firestore."""
-    if not db: return None # Handle uninitialized db
-    try:
-        doc_ref = db.collection('users').document(str(user_id))
-        doc = await doc_ref.get_async()
-        if doc.exists:
-            return doc.to_dict()
-        return None
-    except Exception as e:
-        logger.error(f"Error getting user {user_id} from Firestore: {e}")
-        return None
+    return user_data_store.get(user_id)
 
-async def create_or_update_user(user_id: int, username: str, full_name: str):
-    """Creates or updates user data in Firestore, including new gender/referral fields."""
-    if not db: return False # Handle uninitialized db
-    try:
-        user_ref = db.collection('users').document(str(user_id))
-        
-        # Check if user exists to decide on setting 'created_at' and default new fields
-        doc = await user_ref.get_async()
-        
-        user_data = {
+async def create_user(user_id: int, username: str, full_name: str):
+    if user_id not in user_data_store:
+        user_data_store[user_id] = {
             "user_id": user_id,
             "username": username,
             "full_name": full_name,
+            "in_search": False,
+            "match_id": None,
             "last_active": datetime.now(),
-            "updated_at": datetime.now()
+            "created_at": datetime.now()
         }
-        
-        if not doc.exists:
-            user_data["created_at"] = datetime.now()
-            user_data["in_search"] = False
-            user_data["match_id"] = None
-            user_data["is_matching"] = False # Ensure this is also initialized
-            user_data["referral_count"] = 0 # New field
-            user_data["gender_feature_unlocked_at"] = None # New field
-            user_data["user_gender"] = None # New field
-            user_data["looking_for_gender"] = None # New field
-            user_data["current_bot_state"] = None # New field for conversation state
-            user_data["search_type"] = None # New field: 'general', 'gender_specific'
-            logger.info(f"New user {user_id} created in Firestore.")
-        else:
-            logger.info(f"User {user_id} updated in Firestore.")
-        
-        await user_ref.set(user_data, merge=True) # Use set with merge=True
-        return True
-    except Exception as e:
-        logger.error(f"Error creating/updating user {user_id} in Firestore: {e}")
-        return False
+        logger.info(f"User {user_id} created in memory.")
+    # If user exists, ensure username/full_name are up-to-date
+    else:
+        user_data_store[user_id]["username"] = username
+        user_data_store[user_id]["full_name"] = full_name
+        user_data_store[user_id]["last_active"] = datetime.now() # Update last active
+        logger.info(f"User {user_id} already exists in memory, updated info.")
 
-async def update_user_field(user_id: int, **kwargs):
-    """Updates specific fields for a user in Firestore."""
-    if not db: return False # Handle uninitialized db
-    try:
-        user_ref = db.collection('users').document(str(user_id))
-        kwargs["last_active"] = datetime.now()
-        kwargs["updated_at"] = datetime.now()
-        await user_ref.update(kwargs)
-        logger.info(f"User {user_id} fields updated in Firestore: {kwargs}.")
-        return True
-    except Exception as e:
-        logger.error(f"Error updating user {user_id} fields in Firestore: {e}")
-        return False
+
+async def update_user(user_id: int, **kwargs):
+    if user_id in user_data_store:
+        user_data_store[user_id].update(kwargs)
+        user_data_store[user_id]["last_active"] = datetime.now()
+        logger.info(f"User {user_id} updated in memory with {kwargs}.")
+    else:
+        logger.warning(f"Attempted to update non-existent user {user_id} in memory.")
 
 async def remove_user_from_search(user_id: int):
-    """Clears search status for a user in Firestore."""
-    return await update_user_field(user_id, in_search=False, match_id=None, is_matching=False, search_type=None, current_bot_state=None)
+    if user_id in user_data_store:
+        user_data_store[user_id]["in_search"] = False
+        user_data_store[user_id]["match_id"] = None
+        user_data_store[user_id]["last_active"] = datetime.now()
+        logger.info(f"User {user_id} removed from search queue in memory.")
 
-# Universal Block Check Function (assuming blocked_users remains in-memory for now)
+# Universal Block Check Function
 async def is_blocked(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user_id = update.effective_user.id
     
@@ -154,34 +90,34 @@ async def is_blocked(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool
         message_text = "You are temporarily blocked from using this bot for 24 hours due to a violation of our rules."
         if update.callback_query:
             await update.callback_query.answer(text=message_text, show_alert=True)
+            # No edit_message_text here, just an alert.
         else:
             await update.message.reply_text(message_text)
         logger.info(f"Blocked user {user_id} attempted to interact with bot.")
         return True
     return False
 
-# --- Utility functions for keyboards ---
-
+# Utility functions for keyboards
 def get_command_reply_keyboard():
-    """Returns the main ReplyKeyboardMarkup for commands, including new gender search."""
+    """Returns the persistent reply keyboard with Find Match and Stop Chat buttons."""
     keyboard = [
         [KeyboardButton("🔍 Find a Match")],
-        [KeyboardButton("🛑 Stop Chat")],
-        [KeyboardButton("👫 Search by Gender")] # New button
+        [KeyboardButton("🛑 Stop Chat")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 def get_post_chat_feedback_keyboard(reported_partner_id: int):
-    """Returns the inline keyboard for post-chat feedback."""
+    """Returns the inline keyboard for post-chat feedback and reports."""
     keyboard = [
         [InlineKeyboardButton("👍", callback_data="chat_feedback_up"),
          InlineKeyboardButton("👎", callback_data="chat_feedback_down")],
+        # Pass reported_partner_id to the report start callback
         [InlineKeyboardButton("⚠️ Report", callback_data=f"chat_feedback_report_start_{reported_partner_id}")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 def get_report_reasons_keyboard():
-    """Returns the inline keyboard for report reasons."""
+    """Returns the inline keyboard with predefined report reasons."""
     keyboard = [
         [InlineKeyboardButton("Spam / Advertising", callback_data="report_reason_spam")],
         [InlineKeyboardButton("Harassment / Abuse", callback_data="report_reason_harassment")],
@@ -190,275 +126,87 @@ def get_report_reasons_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def get_own_gender_inline_keyboard():
-    """Returns the inline keyboard for user's own gender selection (Male/Female/Other)."""
-    keyboard = [
-        [
-            InlineKeyboardButton("Male", callback_data="gender_male"),
-            InlineKeyboardButton("Female", callback_data="gender_female")
-        ],
-        [
-            InlineKeyboardButton("Other", callback_data="gender_other")
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def get_looking_for_gender_inline_keyboard():
-    """Returns the inline keyboard for preferred gender for match selection (Male/Female/Other/Any)."""
-    keyboard = [
-        [
-            InlineKeyboardButton("Male", callback_data="looking_for_gender_male"),
-            InlineKeyboardButton("Female", callback_data="looking_for_gender_female")
-        ],
-        [
-            InlineKeyboardButton("Other", callback_data="looking_for_gender_other"),
-            InlineKeyboardButton("Any Gender", callback_data="looking_for_gender_any")
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# --- Handlers ---
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+# Handlers
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handles the /start command, creates/updates user, and shows main keyboard."""
     if await is_blocked(update, context):
-        return ConversationHandler.END # If using ConversationHandler for start
+        return ConversationHandler.END # Exit if blocked
 
     user_id = update.effective_user.id
     username = update.effective_user.username
     full_name = update.effective_user.full_name
 
-    await create_or_update_user(user_id, username, full_name)
+    await create_user(user_id, username, full_name)
     
     await update.message.reply_text(
         f"Welcome to The Secret Meet, {full_name}! Use the buttons below to find a match or type /help.",
-        reply_markup=get_command_reply_keyboard(),
+        reply_markup=get_command_reply_keyboard(), # Show persistent command keyboard
     )
-    return ConversationHandler.END # Or return a state if start is part of a conversation
+    return ConversationHandler.END
 
 async def find_next_match_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Initiates the search for a new partner (general search)."""
+    """Initiates the search for a new partner."""
     if await is_blocked(update, context):
-        return
+        return # Exit if blocked
 
     user_id = update.effective_user.id
-    user_data = await get_user(user_id)
+    username = update.effective_user.username
+    full_name = update.effective_user.full_name
 
-    if user_data and user_data.get('is_matching'): # Check 'is_matching' as it means active chat
+    # Ensure user data exists and retrieve it
+    await create_user(user_id, username, full_name) 
+    user_data = await get_user(user_id) # Fetch current user data
+
+    if user_data and user_data.get('match_id'): # Check if user is already in a chat
         message_text = "You are already in a chat. Please stop your current chat first to find a new match."
         if update.callback_query:
             await update.callback_query.answer(text=message_text, show_alert=True)
         else:
             await update.message.reply_text(message_text, reply_markup=get_command_reply_keyboard())
-        logger.info(f"User {user_id} attempted to find a match while already in chat {user_data.get('match_id')}.")
-        return
+        logger.info(f"User {user_id} attempted to find a match while already in chat {user_data['match_id']}.")
+        return # Exit the function if already in a chat
     
-    # If not in search or matching, update to 'in_search'
-    await update_user_field(user_id, in_search=True, search_type='general', match_id=None, is_matching=False, current_bot_state=None)
-
+    # If not in a chat, proceed with searching
+    await update_user(user_id, in_search=True) 
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text("Searching for a partner now...")
     else:
         await update.message.reply_text("Searching for a partner now...")
-    logger.info(f"User {user_id} initiated general search.")
+    logger.info(f"User {user_id} initiated search.")
 
-async def stop_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the 'Stop Chat' button, ending current chat or search."""
-    if await is_blocked(update, context):
-        return
-
-    user_id = update.effective_user.id
-    user_data = await get_user(user_id)
-
-    if not user_data:
-        await update.message.reply_text("Please /start the bot first.")
-        return
-
-    partner_id = user_data.get('match_id')
-
-    # Update current user's status
-    await update_user_field(user_id, in_search=False, is_matching=False, match_id=None, search_type=None, current_bot_state=None)
-    
-    await update.message.reply_text("You have stopped the chat/search.", reply_markup=get_command_reply_keyboard())
-    logger.info(f"User {user_id} stopped chat/search.")
-
-    if partner_id:
-        partner_ref = users_collection.document(str(partner_id))
-        partner_data_doc = await partner_ref.get_async()
-        if partner_data_doc.exists and partner_data_doc.to_dict().get('match_id') == user_id:
-            # Update partner's status if they were still matched with this user
-            await update_user_field(partner_id, in_search=False, is_matching=False, match_id=None, search_type=None, current_bot_state=None)
-            await context.bot.send_message(
-                chat_id=partner_id,
-                text="Your partner has disconnected. You can find a new partner using the buttons below.",
-                reply_markup=get_command_reply_keyboard()
-            )
-            # Send feedback keyboard to partner
-            await context.bot.send_message(
-                chat_id=partner_id,
-                text="How was your chat with this user?",
-                reply_markup=get_post_chat_feedback_keyboard(reported_partner_id=user_id)
-            )
-            logger.info(f"Chat between {user_id} and {partner_id} ended by {user_id}.")
-        else:
-            logger.info(f"User {user_id} stopped, but partner {partner_id} was already disconnected or not matched mutually.")
-    else:
-        logger.info(f"User {user_id} stopped search, not in active chat.")
-
-
-# --- New "Search by Gender" Handlers ---
-
-async def search_by_gender_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the 'Search by Gender' button click."""
-    if await is_blocked(update, context):
-        return
-
-    user_id = str(update.effective_user.id)
-    user_ref = users_collection.document(user_id)
-    user_data_doc = await user_ref.get_async()
-    user_data = user_data_doc.to_dict()
-
-    if not user_data:
-        await update.message.reply_text("Please /start the bot first to initialize your profile.")
-        return
-    
-    # If user is already in a match, stop it first
-    if user_data.get('is_matching'):
-        await stop_chat_command(update, context) # Use existing stop logic
-        await update.message.reply_text("Please click 'Search by Gender' again after the current chat is stopped.")
-        return
-
-    referral_count = user_data.get('referral_count', 0)
-    gender_feature_unlocked_at = user_data.get('gender_feature_unlocked_at')
-
-    is_eligible = False
-    if referral_count >= 3 and gender_feature_unlocked_at:
-        if isinstance(gender_feature_unlocked_at, google.cloud.firestore.Timestamp):
-            unlocked_at_dt = gender_feature_unlocked_at.astimezone(datetime.timezone.utc)
-        elif isinstance(gender_feature_unlocked_at, datetime): # Direct datetime from local test or old data
-             unlocked_at_dt = gender_feature_unlocked_at.astimezone(datetime.timezone.utc)
-        else:
-            unlocked_at_dt = None # Invalid or missing timestamp
-            
-        if unlocked_at_dt:
-            time_elapsed = datetime.now(datetime.timezone.utc) - unlocked_at_dt
-            if time_elapsed < timedelta(hours=3):
-                is_eligible = True
-            else:
-                logger.info(f"User {user_id}: Gender feature 3-hour window expired.")
-                await user_ref.update({'gender_feature_unlocked_at': None}) # Reset for next unlock
-    
-    if not is_eligible:
-        message = (
-            f"You can only use this feature when you refer 3 people. "
-            f"Once unlocked, you can use this feature for 3 hours. "
-            f"You have currently referred {referral_count} people."
-        )
-        await update.message.reply_text(message, reply_markup=get_command_reply_keyboard())
-        logger.info(f"User {user_id} tried gender search, but not eligible (referrals: {referral_count}).")
-    else:
-        logger.info(f"User {user_id} is eligible for gender search.")
-        user_gender = user_data.get('user_gender')
-        if not user_gender:
-            await update.message.reply_text(
-                "First, what is your gender?",
-                reply_markup=get_own_gender_inline_keyboard()
-            )
-            await user_ref.update({'current_bot_state': 'awaiting_own_gender'})
-            logger.info(f"User {user_id} asked for own gender.")
-        else:
-            await update.message.reply_text(
-                "Which gender are you looking to chat with?",
-                reply_markup=get_looking_for_gender_inline_keyboard()
-            )
-            await user_ref.update({'current_bot_state': 'awaiting_looking_for_gender'})
-            logger.info(f"User {user_id} asked for looking for gender.")
-
-async def gender_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles inline keyboard button presses for gender selection."""
-    query = update.callback_query
-    await query.answer() # Acknowledge the callback query to remove loading state
-    user_id = str(query.from_user.id)
-    user_ref = users_collection.document(user_id)
-    user_data_doc = await user_ref.get_async()
-    user_data = user_data_doc.to_dict()
-
-    if not user_data:
-        await query.message.reply_text("Please /start the bot first.")
-        return
-
-    current_bot_state = user_data.get('current_bot_state')
-
-    if query.data.startswith('gender_') and current_bot_state == 'awaiting_own_gender':
-        selected_gender = query.data.replace('gender_', '')
-        await user_ref.update({'user_gender': selected_gender})
-        await query.edit_message_text(f"Your gender set to: {selected_gender.capitalize()}")
-        logger.info(f"User {user_id} set own gender to: {selected_gender}.")
-
-        # Now ask for preferred gender for match
-        await query.message.reply_text(
-            "Which gender are you looking to chat with?",
-            reply_markup=get_looking_for_gender_inline_keyboard()
-        )
-        await user_ref.update({'current_bot_state': 'awaiting_looking_for_gender'})
-        logger.info(f"User {user_id} moved to looking for gender.")
-
-    elif query.data.startswith('looking_for_gender_') and current_bot_state == 'awaiting_looking_for_gender':
-        selected_preference = query.data.replace('looking_for_gender_', '')
-        await user_ref.update({
-            'looking_for_gender': selected_preference,
-            'in_search': True,
-            'search_type': 'gender_specific', # Mark search as gender-specific
-            'current_bot_state': None # Clear state
-        })
-        await query.edit_message_text(f"You are looking for: {selected_preference.replace('_', ' ').capitalize()}")
-        await query.message.reply_text(
-            f"Okay, you are looking for a {selected_preference.replace('_', ' ')} partner. Searching for a match now...",
-            reply_markup=get_command_reply_keyboard() # Show main keyboard again
-        )
-        logger.info(f"User {user_id} set looking for gender to: {selected_preference}. Initiating gender-specific search.")
-
-        # --- Trigger Matching Logic (Conceptual) ---
-        # If your matching scheduler runs very frequently, it will pick this up.
-        # Otherwise, you might want to directly call a matching function here.
-
-    else:
-        # Handle unexpected callback data or state mismatch
-        await query.message.reply_text("An error occurred or your previous action timed out. Please try again or use /start.", reply_markup=get_command_reply_keyboard())
-        logger.warning(f"User {user_id} received unexpected callback data: {query.data} in state {current_bot_state}")
-
-# --- General Feedback Handlers ---
+# General Feedback Handlers (only accessible via /sendfeedback command)
 async def send_feedback_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Starts the feedback conversation."""
     if await is_blocked(update, context):
-        return ConversationHandler.END
+        return ConversationHandler.END # Exit if blocked
 
-    if update.callback_query: # This might be from a keyboard button
+    if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text("Please type and send your general feedback message. You can type /cancel to go back to the main menu at any time.")
-    else: # This might be from a /feedback command
+    else:
         await update.message.reply_text("Please type and send your general feedback message. You can type /cancel to go back to the main menu at any time.")
     return FEEDBACK_MESSAGE
 
 async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receives and forwards general feedback to the admin."""
     if await is_blocked(update, context):
-        return ConversationHandler.END
+        return ConversationHandler.END # Exit if blocked
 
     user_id = update.effective_user.id
     feedback_text = update.message.text
     
-    if feedback_text and feedback_text.lower() == "/cancel":
+    if feedback_text == "/cancel":
         await update.message.reply_text(
             "Feedback cancelled.",
-            reply_markup=get_command_reply_keyboard()
+            reply_markup=get_command_reply_keyboard() # Return to main reply keyboard
         )
         return ConversationHandler.END
 
     try:
         await context.bot.send_message(
             chat_id=ADMIN_USER_ID,
-            text=f"Anonymous General Feedback:\n\nFrom User ID: `{user_id}`\nFeedback:\n{feedback_text}",
-            parse_mode='Markdown'
+            text=f"Anonymous General Feedback:\n\n{feedback_text}"
         )
         await update.message.reply_text("Thank you for your feedback! It has been sent anonymously.", reply_markup=get_command_reply_keyboard())
         logger.info(f"Anonymous feedback received from {user_id} and forwarded to admin.")
@@ -468,10 +216,11 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     return ConversationHandler.END
 
-# --- Support Chat Handlers ---
+# Support Chat Handlers
 async def start_support_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Starts the support chat conversation."""
     if await is_blocked(update, context):
-        return ConversationHandler.END
+        return ConversationHandler.END # Exit if blocked
 
     await update.message.reply_text(
         "Please type and send your support message. We will get back to you as soon as possible. Type /cancel to go back to the main menu."
@@ -479,15 +228,16 @@ async def start_support_chat(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return SUPPORT_MESSAGE
 
 async def receive_support_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receives and forwards user support messages to the admin."""
     if await is_blocked(update, context):
-        return ConversationHandler.END
+        return ConversationHandler.END # Exit if blocked
 
     user_id = update.effective_user.id
-    username = update.effective_user.username if update.effective_user.username else "N/A"
+    username = update.effective_user.username
     full_name = update.effective_user.full_name
     support_text = update.message.text
 
-    if support_text and support_text.lower() == "/cancel":
+    if support_text == "/cancel":
         await update.message.reply_text(
             "Support request cancelled.",
             reply_markup=get_command_reply_keyboard()
@@ -523,8 +273,9 @@ async def receive_support_message(update: Update, context: ContextTypes.DEFAULT_
 
     return ConversationHandler.END
 
-# --- Admin Reply Command ---
+# Admin Reply Command
 async def admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin-only command to reply to a specific user's support request."""
     admin_id = update.effective_user.id
     if admin_id != ADMIN_USER_ID:
         await update.message.reply_text("You are not authorized to use this command.")
@@ -551,10 +302,11 @@ async def admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.error(f"Error sending reply from admin {admin_id} to user {target_user_id}: {e}")
         await update.message.reply_text(f"Failed to send reply to user `{target_user_id}`. Error: {e}", parse_mode='Markdown')
 
-# --- Post-Chat Feedback Handlers ---
+# Post-Chat Feedback Handlers
 async def handle_chat_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles positive/negative chat feedback."""
     if await is_blocked(update, context):
-        return
+        return # Exit if blocked
 
     query = update.callback_query
     await query.answer()
@@ -566,24 +318,25 @@ async def handle_chat_feedback(update: Update, context: ContextTypes.DEFAULT_TYP
     elif feedback_type == 'down':
         await query.edit_message_text("👎 Sorry to hear that. We'll try to improve your matches.")
     
-    # Send main keyboard after feedback
+    # After feedback, ensure persistent reply keyboard is shown
     await context.bot.send_message(
         chat_id=user_id,
         text="You can find a new partner using the buttons below.",
         reply_markup=get_command_reply_keyboard()
     )
-    logger.info(f"User {user_id} gave chat feedback: {feedback_type}.")
 
 async def chat_feedback_report_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Starts the chat reporting process by showing reasons."""
     if await is_blocked(update, context):
-        return ConversationHandler.END
+        return ConversationHandler.END # Exit if blocked
 
     query = update.callback_query
     await query.answer()
     
+    # Extract reported_partner_id from callback_data (e.g., "chat_feedback_report_start_12345")
     try:
         reported_partner_id = int(query.data.split('_')[-1])
-        context.user_data['reported_partner_id'] = reported_partner_id
+        context.user_data['reported_partner_id'] = reported_partner_id # Store for later use
         logger.info(f"Reporter {query.from_user.id} initiating report for partner {reported_partner_id}.")
     except ValueError:
         logger.error(f"Invalid reported_partner_id in callback data: {query.data}")
@@ -594,58 +347,50 @@ async def chat_feedback_report_start(update: Update, context: ContextTypes.DEFAU
         "Choose a reason for your report:",
         reply_markup=get_report_reasons_keyboard()
     )
-    return REPORT_REASON_SELECTION
+    return REPORT_REASON_SELECTION # Transition to the new state
 
 async def handle_specific_report_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handles the selection of a specific report reason and sends it to the admin."""
     if await is_blocked(update, context):
-        return ConversationHandler.END
+        return ConversationHandler.END # Exit if blocked
 
     query = update.callback_query
-    await query.answer()
+    await query.answer() # Acknowledge callback immediately
     reporter_user_id = query.from_user.id
     reason = query.data.replace('report_reason_', '').replace('_', ' ').title()
-    logger.info(f"User {reporter_user_id} selected report reason: {reason}")
+    logger.info(f"User {reporter_user_id} selected report reason: {reason}") # Log the selected reason
 
-    reported_user_id = context.user_data.pop('reported_partner_id', None)
+    # Retrieve reported_partner_id from context.user_data
+    reported_user_id = context.user_data.pop('reported_partner_id', None) # Remove it after use
 
-    if reason == "Cancel": # This means "report_reason_cancel" callback
+    if reason == "Cancel":
         try:
             await query.edit_message_text(
-                "Report cancelled.",
-                reply_markup=None # Remove inline keyboard
-            )
-            # Send main keyboard back to user
-            await context.bot.send_message(
-                chat_id=reporter_user_id,
-                text="You can find a new partner using the buttons below.",
-                reply_markup=get_command_reply_keyboard()
+                "Report cancelled.", # Minimal message for cancellation
+                reply_markup=None # Remove inline keyboard, relying on persistent keyboard
             )
             logger.info(f"User {reporter_user_id} report cancelled. Message edited.")
         except Exception as e:
             logger.error(f"Error editing message for report cancellation for user {reporter_user_id}: {e}")
+            # Fallback if editing fails: send a new message
             await context.bot.send_message(
                 chat_id=reporter_user_id,
                 text="Report cancelled, but there was an error updating the message.",
                 reply_markup=get_command_reply_keyboard()
             )
         return ConversationHandler.END
-    else:
+    else: # It's a valid report reason
         if not reported_user_id:
             logger.error(f"No reported_partner_id found in context.user_data for report from {reporter_user_id}.")
             await query.edit_message_text("Error: Could not find reported partner's info. Please try again.", reply_markup=None)
-            await context.bot.send_message(
-                chat_id=reporter_user_id,
-                text="Please try again to report using the chat feedback option.",
-                reply_markup=get_command_reply_keyboard()
-            )
             return ConversationHandler.END
 
-        # Get reported user's details from Firestore
+        # Get reported user's details
         reported_user_info = await get_user(reported_user_id)
         reported_username = reported_user_info.get('username', 'N/A') if reported_user_info else 'N/A'
         reported_full_name = reported_user_info.get('full_name', 'N/A') if reported_user_info else 'N/A'
 
-        # Get reporter's details from Firestore
+        # Get reporter's details
         reporter_user_info = await get_user(reporter_user_id)
         reporter_username = reporter_user_info.get('username', 'N/A') if reporter_user_info else 'N/A'
         reporter_full_name = reporter_user_info.get('full_name', 'N/A') if reporter_user_info else 'N/A'
@@ -671,23 +416,19 @@ async def handle_specific_report_reason(update: Update, context: ContextTypes.DE
                 chat_id=ADMIN_USER_ID,
                 text=report_message_to_admin,
                 reply_markup=admin_keyboard,
-                parse_mode='Markdown'
+                parse_mode='Markdown' # For backticks around ID
             )
             logger.info(f"Report sent to admin from {reporter_user_id} for reason: {reason} (Reported: {reported_user_id}).")
             
+            # Edit the existing inline message to a minimal acknowledgment and remove the keyboard for the reporter
             await query.edit_message_text(
-                "Report sent. We will review it shortly.",
-                reply_markup=None # Remove inline keyboard
-            )
-            # Send main keyboard back to user
-            await context.bot.send_message(
-                chat_id=reporter_user_id,
-                text="You can find a new partner using the buttons below.",
-                reply_markup=get_command_reply_keyboard()
+                "Report sent.", # Minimal acknowledgment
+                reply_markup=None # Remove the inline keyboard
             )
             logger.info(f"User {reporter_user_id} report sent. Message edited for reporter.")
         except Exception as e:
             logger.error(f"Failed to send report from {reporter_user_id} for reason {reason} (Reported: {reported_user_id}): {e}")
+            # Fallback if sending or editing fails: send a new message to the reporter
             await context.bot.send_message(
                 chat_id=reporter_user_id,
                 text="There was an error sending your report or updating the message. Please try again later.",
@@ -697,12 +438,9 @@ async def handle_specific_report_reason(update: Update, context: ContextTypes.DE
         return ConversationHandler.END
 
 async def admin_block_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin command to block a user for 24 hours."""
-    if await is_blocked(update, context): # Admin might also be blocked, although unlikely for this action
-        return
-
+    """Admin-only callback to block a user for 24 hours."""
     query = update.callback_query
-    await query.answer()
+    await query.answer() # Acknowledge the callback
 
     admin_id = query.from_user.id
     if admin_id != ADMIN_USER_ID:
@@ -713,276 +451,447 @@ async def admin_block_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     try:
         user_id_to_block = int(query.data.split(':')[-1])
         expiration_time = datetime.now() + timedelta(hours=24)
-        blocked_users[user_id_to_block] = expiration_time # Store in memory for immediate access
-        
-        # Optionally, persist this block to Firestore as well for cross-instance consistency
-        # await users_collection.document(str(user_id_to_block)).update({'blocked_until': expiration_time})
-
-        await query.edit_message_text(f"User `{user_id_to_block}` has been blocked for 24 hours.", parse_mode='Markdown')
+        blocked_users[user_id_to_block] = expiration_time
         logger.info(f"Admin {admin_id} blocked user {user_id_to_block} until {expiration_time}.")
-        
-        # Inform the blocked user (optional but good practice)
-        try:
-            await context.bot.send_message(
-                chat_id=user_id_to_block,
-                text="You have been temporarily blocked from using this bot for 24 hours due to a violation of our rules. If you believe this is an error, please contact support."
-            )
-        except Exception as e:
-            logger.warning(f"Could not inform blocked user {user_id_to_block} about block: {e}")
 
-    except ValueError:
-        await query.edit_message_text("Invalid User ID in callback data.")
+        # Fetch blocked user's details for confirmation message
+        blocked_user_info = await get_user(user_id_to_block)
+        blocked_username = blocked_user_info.get('username', 'N/A') if blocked_user_info else 'N/A'
+        blocked_full_name = blocked_user_info.get('full_name', 'N/A') if blocked_user_info else 'N/A'
+
+        confirmation_message = (
+            f"User blocked for 24 hours:\n"
+            f"ID: `{user_id_to_block}`\n"
+            f"Username: @{blocked_username}\n"
+            f"Full Name: {blocked_full_name}\n"
+            f"Will unblock automatically at {expiration_time.strftime('%Y-%m-%d %H:%M:%S')} IST."
+        )
+        await query.edit_message_text(
+            text=confirmation_message,
+            parse_mode='Markdown',
+            reply_markup=None # Remove the block button from the report to prevent re-blocking
+        )
     except Exception as e:
-        logger.error(f"Error blocking user from admin {admin_id}: {e}")
-        await query.edit_message_text(f"Failed to block user. Error: {e}")
+        logger.error(f"Error blocking user by admin {admin_id}: {e}")
+        await query.edit_message_text("Error blocking user. Please check logs.")
 
 
-# --- Message Forwarding Logic (Conceptual - IMPORTANT: Implement this based on your needs) ---
-async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Forwards messages between matched users."""
+async def end_chat_for_users(user1_id: int, user2_id: int, application_bot: Application, initiator_id: int = None) -> None:
+    """Ends the chat for both users and offers feedback.
+    initiator_id: The ID of the user who explicitly stopped the chat, if any."""
+    
+    # Clean up expired blocks for users involved in chat end
+    for user_id_check in [user1_id, user2_id]:
+        if user_id_check in blocked_users and datetime.now() >= blocked_users[user_id_check]:
+            del blocked_users[user_id_check]
+            logger.info(f"User {user_id_check} block expired at chat end.")
+
+    is_user1_blocked = user1_id in blocked_users
+    is_user2_blocked = user2_id in blocked_users
+
+    if initiator_id: # The one who explicitly stopped
+        initiator_text = "You have stopped the chat. You are now out of the queue."
+        partner_text = "Your partner has stopped the chat 😔\nUse the buttons below to find a new partner."
+    else: # If chat ended for other reasons (e.g., disconnection, error, or not explicitly stopped)
+        initiator_text = "Your chat has ended. You are now out of the queue."
+        partner_text = "Your chat has ended. You are now out of the queue."
+
+    # Clear match status for both users
+    for user_id in [user1_id, user2_id]:
+        if user_id in user_data_store:
+            user_data_store[user_id]['in_search'] = False
+            user_data_store[user_id]['match_id'] = None
+            user_data_store[user_id]["last_active"] = datetime.now()
+
+    try:
+        # Send distinct messages based on initiator, only if not blocked
+        if initiator_id == user1_id:
+            if not is_user1_blocked:
+                await application_bot.bot.send_message(chat_id=user1_id, text=initiator_text)
+            if not is_user2_blocked:
+                await application_bot.bot.send_message(chat_id=user2_id, text=partner_text)
+        elif initiator_id == user2_id:
+            if not is_user2_blocked:
+                await application_bot.bot.send_message(chat_id=user2_id, text=initiator_text)
+            if not is_user1_blocked:
+                await application_bot.bot.send_message(chat_id=user1_id, text=partner_text)
+        else: # No specific initiator (e.g., error in forwarding)
+            if not is_user1_blocked:
+                await application_bot.bot.send_message(chat_id=user1_id, text=initiator_text)
+            if not is_user2_blocked:
+                await application_bot.bot.send_message(chat_id=user2_id, text=initiator_text)
+
+        # Send feedback option to BOTH users, but only if not blocked
+        feedback_msg = "If you wish, leave your feedback about your partner. It will help us find better partners for you in the future."
+        
+        # Ensure reported_partner_id is correct for each feedback message
+        if not is_user1_blocked:
+            await application_bot.bot.send_message(
+                chat_id=user1_id,
+                text=feedback_msg,
+                reply_markup=get_post_chat_feedback_keyboard(reported_partner_id=user2_id) # Reporter user1, reported user2
+            )
+        if not is_user2_blocked:
+            await application_bot.bot.send_message(
+                chat_id=user2_id,
+                text=feedback_msg,
+                reply_markup=get_post_chat_feedback_keyboard(reported_partner_id=user1_id) # Reporter user2, reported user1
+            )
+        logger.info(f"Chat ended for {user1_id} and {user2_id}. Feedback offered (to unblocked users).")
+
+    except Exception as e:
+        logger.error(f"Error ending chat or offering feedback for {user1_id}, {user2_id}: {e}")
+
+async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Ends the current chat and offers post-chat feedback to both participants."""
     if await is_blocked(update, context):
-        return
+        return # Exit if blocked
 
-    user_id = str(update.effective_user.id)
+    user_id = update.effective_user.id
     user_data = await get_user(user_id)
 
-    if not user_data or not user_data.get('is_matching'):
-        # If user is not in an active chat, don't forward messages.
-        # Could reply with instructions or ignore.
-        # await update.message.reply_text("You are not currently in a chat. Use 'Find a Match' to start.")
-        logger.info(f"User {user_id} sent message while not in chat: {update.message.text}")
+    if user_data and user_data['match_id']:
+        match_id = user_data['match_id']
+        partner_id = None
+        for uid, udata in user_data_store.items():
+            if udata.get('match_id') == match_id and uid != user_id:
+                partner_id = uid
+                break
+        
+        if partner_id:
+            await end_chat_for_users(user_id, partner_id, context.application, initiator_id=user_id)
+            logger.info(f"Chat {match_id} stopped by user {user_id}.")
+        else:
+            # User had a match_id, but partner was not found (e.g., partner's state cleared, bot restarted)
+            await remove_user_from_search(user_id) # Clear initiator's state
+            await update.message.reply_text("You have left your previous conversation. Your partner may have disconnected.", reply_markup=get_command_reply_keyboard())
+            # Offer feedback specifically to the initiator, as partner is unknown or state is inconsistent
+            feedback_msg = "If you wish, you can still leave feedback about your last interaction."
+            try:
+                # Use a dummy ID (e.g., 0) for reported_partner_id if truly unknown, but better to avoid this path
+                # if possible by ensuring partner_id is always resolved before offering report.
+                # For robustness, using 0 and handling it in report handlers is an option.
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=feedback_msg,
+                    reply_markup=get_post_chat_feedback_keyboard(reported_partner_id=0) # Dummy ID for unknown partner
+                )
+                logger.info(f"User {user_id} stopped chat with missing partner. Feedback offered to initiator.")
+            except Exception as e:
+                logger.error(f"Error offering feedback to {user_id} after partner missing: {e}")
+    else:
+        await update.message.reply_text("You are not currently in a chat or searching. Use the buttons below to find a partner.", reply_markup=get_command_reply_keyboard())
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Provides information on how to use the bot."""
+    if await is_blocked(update, context):
+        return # Exit if blocked
+
+    await update.message.reply_text(
+        "Here's how to use The Secret Meet:\n\n"
+        "**Persistent Buttons (bottom of chat):**\n"
+        "• `🔍 Find a Match`: Search for a new chat partner.\n"
+        "• `🛑 Stop Chat`: End your current chat with a partner.\n\n"
+        "**Other Commands (type them out):**\n"
+        "• `/start`: Begin your journey or return to the main menu.\n"
+        "• `/help`: Get information on how to use the bot.\n"
+        "• `/next`: (Same as 'Find a Match' button) Find a new partner.\n"
+        "• `/stop`: (Same as 'Stop Chat' button) End your current chat.\n"
+        "• `/sendfeedback`: Send general suggestions or comments directly to the bot owner.\n"
+        "• `/support`: Contact the bot admin for help.\n\n" # Added /support
+        "**During a chat:** Simply send any message (text, photos, videos, voice) and it will be forwarded anonymously to your partner.\n\n"
+        "**After a chat:** You'll be prompted to give feedback (👍/👎) or report any issues (⚠️ Report) about your partner.\n\n"
+        "**Admin Commands (for bot owner only):**\n"
+        "• `/unblock <user_id>`: Manually unblock a user by their ID.\n"
+        "• `/reply <user_id> <message>`: Send a message to a specific user.\n" # Added /reply
+        "• `🚫 Block User for 24h` button (in reports): Temporarily block a reported user.",
+        reply_markup=get_command_reply_keyboard() # Show persistent command keyboard after help
+    )
+
+async def send_match_found_message(user1_id, user2_id, application_bot):
+    """Sends the 'Partner Found' message to both matched users and shows typing."""
+    # Check if any user became blocked during the search process
+    if user1_id in blocked_users and datetime.now() < blocked_users[user1_id]:
+        logger.info(f"User {user1_id} found match but is blocked. Not sending message.")
+        return
+    if user2_id in blocked_users and datetime.now() < blocked_users[user2_id]:
+        logger.info(f"User {user2_id} found match but is blocked. Not sending message.")
         return
 
-    partner_id = user_data.get('match_id')
-
-    if partner_id:
-        try:
-            # Forward the message to the partner
-            await update.effective_message.copy(chat_id=partner_id)
-            logger.info(f"Message from {user_id} forwarded to {partner_id}.")
-        except Exception as e:
-            logger.error(f"Error forwarding message from {user_id} to {partner_id}: {e}")
-            await update.message.reply_text("There was an error sending your message. Your partner might have disconnected.")
-            # Optionally, trigger stop_chat_command if forwarding fails
-            # await stop_chat_command(update, context) # Pass update/context correctly
-    else:
-        logger.warning(f"User {user_id} has 'is_matching' true but no 'match_id'. Data inconsistency.")
-        await update.message.reply_text("You seem to be in a broken chat state. Please use '🛑 Stop Chat' and try again.")
-        # Attempt to reset state
-        await update_user_field(user_id, in_search=False, is_matching=False, match_id=None, search_type=None, current_bot_state=None)
-
-
-# --- Background Matching Scheduler ---
-# This function will run periodically to find and connect users.
-# You will add this to application.job_queue.
-
-async def matching_scheduler_function(context: ContextTypes.DEFAULT_TYPE): # Corrected type hint for context
-    logger.info("Running matching scheduler...")
+    match_id = uuid.uuid4()
     
-    # Get all users who are currently in search
-    users_in_search_query = users_collection.where('in_search', '==', True)
-    users_in_search_docs = users_in_search_query.stream()
-    
-    search_queue_gender_specific = []
-    search_queue_general = [] 
+    if user1_id in user_data_store:
+        user_data_store[user1_id]['in_search'] = False
+        user_data_store[user1_id]['match_id'] = match_id
+    if user2_id in user_data_store:
+        user_data_store[user2_id]['in_search'] = False
+        user_data_store[user2_id]['match_id'] = match_id
 
-    async for doc in users_in_search_docs:
-        user_data = doc.to_dict()
-        user_id = doc.id
+    match_info_msg = (
+        "🎉 Partner found! 🎉\n\n"
+        "Say hello! 👋\n"
+        "Use the buttons below:\n"
+        "• `🛑 Stop Chat` — stop this chat\n"
+        "• `🔍 Find a Match` — find a new partner"
+    )
+
+    try:
+        # Send match found message first
+        await application_bot.send_message(chat_id=user1_id, text=match_info_msg) 
+        await application_bot.send_message(chat_id=user2_id, text=match_info_msg)
         
-        # Skip users who might already be matched (safety check)
-        if user_data.get('is_matching') or user_data.get('match_id'):
-            logger.info(f"User {user_id} unexpectedly found in_search but already matched. Resetting.")
-            await users_collection.document(user_id).update({'in_search': False, 'is_matching': True}) # Adjust as per your state management
+        # Then send typing action. This will make it appear as if the other user is typing.
+        await application_bot.send_chat_action(chat_id=user1_id, action=ChatAction.TYPING) # User1 sees typing from User2
+        await application_bot.send_chat_action(chat_id=user2_id, action=ChatAction.TYPING) # User2 sees typing from User1
+        # No sleep needed here, the typing indicator will naturally disappear after a few seconds
+        # or when an actual message is sent.
+
+        logger.info(f"Match {match_id} found between {user1_id} and {user2_id}.")
+    except Exception as e:
+        logger.error(f"Error sending match found message: {e}")
+        # Revert search status if message fails
+        if user1_id in user_data_store:
+            user_data_store[user1_id]['in_search'] = True
+            user_data_store[user1_id]['match_id'] = None
+        if user2_id in user_data_store:
+            user_data_store[user2_id]['in_search'] = True
+            user_data_store[user2_id]['match_id'] = None
+
+async def matching_scheduler(application: Application):
+    """Periodically checks for and matches users in the search queue."""
+    while True:
+        await asyncio.sleep(1) # Reduced to 1 second for faster matching
+        
+        # Filter out blocked users from the search queue
+        users_in_search = [
+            user for user_id, user in user_data_store.items()
+            if user["in_search"] and user["match_id"] is None and \
+               (user_id not in blocked_users or datetime.now() >= blocked_users[user_id])
+        ]
+        
+        if len(users_in_search) < 2:
             continue
 
-        if user_data.get('search_type') == 'gender_specific':
-            unlocked_at = user_data.get('gender_feature_unlocked_at')
-            # Ensure timestamp is a datetime object for calculation
-            if isinstance(unlocked_at, google.cloud.firestore.Timestamp):
-                unlocked_at_dt = unlocked_at.astimezone(datetime.timezone.utc)
-            elif isinstance(unlocked_at, datetime):
-                unlocked_at_dt = unlocked_at.astimezone(datetime.timezone.utc)
-            else:
-                unlocked_at_dt = None
+        if len(users_in_search) >= 2:
+            user1 = users_in_search[0]
+            user2 = users_in_search[1]
             
-            # Check if the 3-hour window is still active
-            if unlocked_at_dt and (datetime.now(datetime.timezone.utc) - unlocked_at_dt < timedelta(hours=3)):
-                # Ensure user's own gender and looking_for_gender are set for gender-specific search
-                if user_data.get('user_gender') and user_data.get('looking_for_gender'):
-                    search_queue_gender_specific.append((user_id, user_data))
-                else:
-                    logger.warning(f"User {user_id} in gender_specific search but missing gender data. Moving to general.")
-                    await users_collection.document(user_id).update({'search_type': 'general'}) # Fallback
-                    search_queue_general.append((user_id, user_data))
-            else:
-                logger.info(f"User {user_id} gender search window expired or not set. Moving to general.")
-                await users_collection.document(user_id).update({'search_type': 'general', 'gender_feature_unlocked_at': None})
-                search_queue_general.append((user_id, user_data))
-        else: # 'general' search or 'search_type' is None
-            search_queue_general.append((user_id, user_data))
+            await send_match_found_message(user1['user_id'], user2['user_id'], application.bot)
 
-    # --- Matching Logic ---
-    matched_pairs = set() # To track users who have been matched in this cycle
+async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Forwards messages anonymously between matched users, blocking specific content."""
+    if await is_blocked(update, context):
+        return # Exit if blocked
 
-    # 1. Prioritize gender-specific matches
-    for i in range(len(search_queue_gender_specific)):
-        user1_id, user1_data = search_queue_gender_specific[i]
-        if user1_id in matched_pairs: continue
-
-        for j in range(i + 1, len(search_queue_gender_specific)):
-            user2_id, user2_data = search_queue_gender_specific[j]
-            if user2_id in matched_pairs: continue
-
-            user1_gender = user1_data.get('user_gender')
-            user1_looking_for = user1_data.get('looking_for_gender')
-            
-            user2_gender = user2_data.get('user_gender')
-            user2_looking_for = user2_data.get('looking_for_gender')
-
-            # Basic mutual gender match logic
-            is_match = False
-            if user1_gender and user1_looking_for and user2_gender and user2_looking_for:
-                # Check if user1's preference matches user2's gender
-                pref1_matches_gender2 = (user1_looking_for == user2_gender) or (user1_looking_for == 'any')
-                # Check if user2's preference matches user1's gender
-                pref2_matches_gender1 = (user2_looking_for == user1_gender) or (user2_looking_for == 'any')
-                
-                if pref1_matches_gender2 and pref2_matches_gender1:
-                    is_match = True
-
-            if is_match:
-                logger.info(f"Found gender-specific match: {user1_id} and {user2_id}")
-                
-                # Perform the match: Update Firestore for both users
-                await users_collection.document(user1_id).update({
-                    'in_search': False, 'is_matching': True, 'match_id': user2_id, 'search_type': None, 'current_bot_state': None
-                })
-                await users_collection.document(user2_id).update({
-                    'in_search': False, 'is_matching': True, 'match_id': user1_id, 'search_type': None, 'current_bot_state': None
-                })
-                
-                # Send start messages to both users
-                try:
-                    await context.bot.send_message(chat_id=user1_id, text="Match found! Say hello to your new partner!")
-                    await context.bot.send_message(chat_id=user2_id, text="Match found! Say hello to your new partner!")
-                except Exception as e:
-                    logger.error(f"Error sending match found message: {e}")
-
-                matched_pairs.add(user1_id)
-                matched_pairs.add(user2_id)
-
-
-    # 2. Process general searches for remaining users
-    # Include users from gender_specific queue who didn't find a match
-    all_general_search_users = [(uid, udata) for uid, udata in search_queue_general if uid not in matched_pairs]
+    user_id = update.effective_user.id
     
-    # Add remaining gender-specific users who didn't find a match
-    for uid, udata in search_queue_gender_specific:
-        if uid not in matched_pairs:
-            all_general_search_users.append((uid, udata))
+    # Ignore messages that are commands or specific button texts handled by RegexHandler
+    if update.message.text and (update.message.text.startswith('/') or update.message.text in ["🔍 Find a Match", "🛑 Stop Chat"]):
+        return
 
-    # Now, try to match remaining users in the general queue (e.g., FIFO, random)
-    # This is a basic example; your actual general matching logic might be more complex.
-    if len(all_general_search_users) >= 2:
-        # Simple FIFO matching for general search
-        for i in range(0, len(all_general_search_users) - 1, 2):
-            user1_id, _ = all_general_search_users[i]
-            user2_id, _ = all_general_search_users[i+1]
+    user_data = await get_user(user_id)
 
-            if user1_id in matched_pairs or user2_id in matched_pairs: continue
+    if user_data and user_data['match_id']:
+        match_id = user_data['match_id']
+        
+        partner_id = None
+        for uid, udata in user_data_store.items():
+            if udata.get('match_id') == match_id and uid != user_id:
+                partner_id = uid
+                break
+        
+        if partner_id:
+            # Check if partner is blocked
+            if partner_id in blocked_users and datetime.now() < blocked_users[partner_id]:
+                await update.message.reply_text("Your partner has been temporarily blocked and cannot receive messages.")
+                logger.info(f"User {user_id} tried to send message to blocked partner {partner_id}.")
+                # End chat for the non-blocked user, as communication is broken
+                await end_chat_for_users(user_id, partner_id, context.application, initiator_id=None) # Bot initiated stop
+                return
 
-            logger.info(f"Found general match: {user1_id} and {user2_id}")
-            
-            # Perform the match: Update Firestore for both users
-            await users_collection.document(user1_id).update({
-                'in_search': False, 'is_matching': True, 'match_id': user2_id, 'search_type': None, 'current_bot_state': None
-            })
-            await users_collection.document(user2_id).update({
-                'in_search': False, 'is_matching': True, 'match_id': user1_id, 'search_type': None, 'current_bot_state': None
-            })
-            
-            # Send start messages to both users
             try:
-                await context.bot.send_message(chat_id=user1_id, text="Match found! Say hello to your new partner!")
-                await context.bot.send_message(chat_id=user2_id, text="Match found! Say hello to your new partner!")
+                # --- Anonymity: No forward sign is ensured by re-sending content, not using forward_message. ---
+                # --- Anonymity: Blocking contact cards. ---
+                if update.message.contact:
+                    await update.message.reply_text("Sharing contact information is not allowed to maintain anonymity.")
+                    logger.warning(f"User {user_id} attempted to send a contact card to {partner_id}. Blocked for anonymity.")
+                    return # Do not forward
+                
+                if update.message.text:
+                    await context.bot.send_message(chat_id=partner_id, text=update.message.text)
+                elif update.message.photo:
+                    photo_file_id = update.message.photo[-1].file_id
+                    await context.bot.send_photo(chat_id=partner_id, photo=photo_file_id, caption=update.message.caption)
+                elif update.message.video:
+                    video_file_id = update.message.video.file_id
+                    await context.bot.send_video(chat_id=partner_id, video=video_file_id, caption=update.message.caption)
+                elif update.message.voice:
+                    voice_file_id = update.message.voice.file_id
+                    await context.bot.send_voice(chat_id=partner_id, voice=voice_file_id, caption=update.message.caption)
+                elif update.message.sticker:
+                    sticker_file_id = update.message.sticker.file_id
+                    await context.bot.send_sticker(chat_id=partner_id, sticker=sticker_file_id)
+                elif update.message.animation:
+                    animation_file_id = update.message.animation.file_id
+                    await context.bot.send_animation(chat_id=partner_id, animation=animation_file_id, caption=update.message.caption)
+                elif update.message.document:
+                    document_file_id = update.message.document.file_id
+                    await context.bot.send_document(chat_id=partner_id, document=document_file_id, caption=update.message.caption)
+                elif update.message.audio:
+                    audio_file_id = update.message.audio.file_id
+                    await context.bot.send_audio(chat_id=partner_id, audio=audio_file_id, caption=update.message.caption)
+                elif update.message.location:
+                    await context.bot.send_location(
+                        chat_id=partner_id, 
+                        latitude=update.message.location.latitude, 
+                        longitude=update.message.location.longitude
+                    )
+                else:
+                    await update.message.reply_text("Sorry, this type of message cannot be sent anonymously.")
+                    logger.warning(f"Unsupported message type from {user_id}: {update.message}")
+                    return
+
+                logger.info(f"Message content from {user_id} sent anonymously to {partner_id}.")
             except Exception as e:
-                logger.error(f"Error sending general match found message: {e}")
+                logger.error(f"Error sending anonymous message from {user_id} to {partner_id}: {e}")
+                await update.message.reply_text("Could not send your message to your partner. They might have left or blocked the bot.")
+                await end_chat_for_users(user_id, partner_id, context.application) 
+        else:
+            await update.message.reply_text("You are not currently in a chat. Use the buttons below to find a partner.")
+            await remove_user_from_search(user_id)
+    else:
+        await update.message.reply_text("You are not currently in a chat. Use the buttons below to find a partner.")
 
-            matched_pairs.add(user1_id)
-            matched_pairs.add(user2_id)
+async def post_init_callback(application: Application) -> None:
+    """Callback run after the bot starts, to set up background tasks and bot commands."""
+    logger.info("Running post_init_callback (no database init).")
+    application.bot_data['matching_scheduler_task'] = application.create_task(matching_scheduler(application))
+    
+    # Set bot commands for the '/' menu (Removed /sendfeedback as requested)
+    await application.bot.set_my_commands([
+        ("start", "Start the bot or return to the main menu"),
+        ("help", "Get information on how to use the bot"),
+        ("next", "Find a new partner (same as Find a Match button)"),
+        ("stop", "Stop your current chat (same as Stop Chat button)"),
+        ("sendfeedback", "Send general suggestions or comments to the bot owner"), # Added back as a user command
+        ("support", "Contact the bot admin for help"), # Added for user support
+        ("unblock", "Admin: Unblock a user by ID"), # Admin command
+        ("reply", "Admin: Send a message to a specific user"), # Admin command
+    ])
+    logger.info("Bot commands set.")
+    logger.info("post_init_callback finished.")
 
+async def post_shutdown_callback(application: Application) -> None:
+    """Callback run before the bot shuts down."""
+    logger.info("Bot application shutting down (no database close).")
+    pass
 
-# --- Main Application Setup ---
+async def admin_unblock_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin-only command to manually unblock a user."""
+    if update.effective_user.id != ADMIN_USER_ID:
+        await update.message.reply_text("You are not authorized to use this command.")
+        logger.warning(f"Unauthorized attempt to unblock user by {update.effective_user.id}.")
+        return
+    
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: `/unblock <user_id>`", parse_mode='Markdown')
+        return
 
-async def post_init_callback(application: Application):
-    """Callback function to run after the bot has been initialized."""
-    logger.info("Bot has finished initialization. Ready to receive updates.")
-    # You can add any post-initialization tasks here, e.g., send a message to admin
-    # await application.bot.send_message(chat_id=ADMIN_USER_ID, text="Bot started!")
+    user_id_to_unblock = int(context.args[0])
+    if user_id_to_unblock in blocked_users:
+        del blocked_users[user_id_to_unblock]
+        await update.message.reply_text(f"User `{user_id_to_unblock}` has been unblocked manually.")
+        logger.info(f"Admin {update.effective_user.id} manually unblocked user {user_id_to_unblock}.")
+    else:
+        await update.message.reply_text(f"User `{user_id_to_unblock}` is not currently blocked.")
+    await update.message.reply_text(f"Current blocked users: {list(blocked_users.keys())}")
+
 
 def main() -> None:
-    """Start the bot."""
-    application = Application.builder().token(BOT_TOKEN).post_init(post_init_callback).build()
+    """Starts the bot."""
+    webhook_url = os.getenv("WEBHOOK_URL")
 
-    # Conversation Handler for Feedback
+    application = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init_callback).post_shutdown(post_shutdown_callback).build()
+
+    # Main Conversation Handler (for /start, can be expanded for other flows)
+    application.add_handler(CommandHandler("start", start))
+
+    # General Feedback Conversation Handler (only accessible via command now)
     feedback_conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("feedback", send_feedback_start)],
+        entry_points=[CommandHandler("sendfeedback", send_feedback_start)],
         states={
-            FEEDBACK_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_feedback)],
+            FEEDBACK_MESSAGE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_feedback),
+                CommandHandler("cancel", receive_feedback)
+            ],
         },
-        fallbacks=[CommandHandler("cancel", lambda u, c: ConversationHandler.END)], # Add a general cancel
+        fallbacks=[CommandHandler("start", start)],
+        map_to_parent={
+            ConversationHandler.END: ConversationHandler.END 
+        }
     )
+    application.add_handler(feedback_conv_handler)
 
-    # Conversation Handler for Report Reason (post-chat feedback)
-    report_conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(chat_feedback_report_start, pattern=r"^chat_feedback_report_start_(\d+)$")],
-        states={
-            REPORT_REASON_SELECTION: [CallbackQueryHandler(handle_specific_report_reason, pattern=r"^report_reason_")],
-        },
-        fallbacks=[CommandHandler("cancel", lambda u, c: ConversationHandler.END)], # Add a general cancel
-    )
-
-    # Conversation Handler for Support
+    # Support Chat Conversation Handler
     support_conv_handler = ConversationHandler(
         entry_points=[CommandHandler("support", start_support_chat)],
         states={
-            SUPPORT_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_support_message)],
+            SUPPORT_MESSAGE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_support_message),
+                CommandHandler("cancel", receive_support_message)
+            ],
         },
-        fallbacks=[CommandHandler("cancel", lambda u, c: ConversationHandler.END)], # Add a general cancel
+        fallbacks=[CommandHandler("start", start)],
+        map_to_parent={
+            ConversationHandler.END: ConversationHandler.END 
+        }
     )
-
-    # Add handlers
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(MessageHandler(filters.Regex("🔍 Find a Match"), find_next_match_command))
-    application.add_handler(MessageHandler(filters.Regex("🛑 Stop Chat"), stop_chat_command))
-    
-    # New "Search by Gender" handlers
-    application.add_handler(MessageHandler(filters.Regex("👫 Search by Gender"), search_by_gender_command))
-    application.add_handler(CallbackQueryHandler(gender_selection_callback, pattern='^(gender_|looking_for_gender_).*'))
-
-    # Admin command for replying to support requests
-    application.add_handler(CommandHandler("reply", admin_reply))
-
-    # Handlers for post-chat feedback
-    application.add_handler(CallbackQueryHandler(handle_chat_feedback, pattern=r"^chat_feedback_(up|down)$"))
-    
-    # Register conversation handlers
-    application.add_handler(feedback_conv_handler)
-    application.add_handler(report_conv_handler)
     application.add_handler(support_conv_handler)
 
-    # Handler for general text messages (forwards messages between matched users)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
+    # Report Conversation Handler (post-chat only, specific reasons)
+    report_conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(chat_feedback_report_start, pattern=r'^chat_feedback_report_start_\d+$')], # Regex to match ID
+        states={
+            REPORT_REASON_SELECTION: [ # This is the state where report reasons are selected
+                CallbackQueryHandler(handle_specific_report_reason, pattern='^report_reason_')
+            ]
+        },
+        fallbacks=[CommandHandler("start", start)], # If in report flow and user types /start
+        map_to_parent={
+            ConversationHandler.END: ConversationHandler.END 
+        }
+    )
+    application.add_handler(report_conv_handler)
 
-    # Add the matching scheduler job
-    # This example runs every 10 seconds. Adjust the interval as needed.
-    application.job_queue.run_repeating(matching_scheduler_function, interval=10, first=5) # Start after 5 seconds
+    # Command Handlers (for typing commands)
+    application.add_handler(CommandHandler("stop", stop_chat))
+    application.add_handler(CommandHandler("next", find_next_match_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("unblock", admin_unblock_user)) # Admin unblock command
+    application.add_handler(CommandHandler("reply", admin_reply)) # Admin reply command
+    
+    # Message Handlers for the persistent reply keyboard buttons
+    application.add_handler(MessageHandler(filters.Regex("^🔍 Find a Match$"), find_next_match_command))
+    application.add_handler(MessageHandler(filters.Regex("^🛑 Stop Chat$"), stop_chat))
 
-    logger.info("Bot is starting polling...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Callback Query Handlers (for inline buttons, e.g., post-chat feedback/reports)
+    application.add_handler(CallbackQueryHandler(handle_chat_feedback, pattern='^chat_feedback_(up|down)$'))
+    application.add_handler(CallbackQueryHandler(admin_block_user, pattern=r'^admin_block_user:\d+$')) # Admin block callback
 
+    # Message handler to catch all text/media that is not a command or specific button text
+    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.Regex("^(🔍 Find a Match|🛑 Stop Chat)$"), forward_message))
+
+    if webhook_url:
+        logger.info(f"Running with Webhook: {webhook_url}/{BOT_TOKEN}")
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=int(os.getenv("PORT", "8080")),
+            url_path=BOT_TOKEN,
+            webhook_url=f"{webhook_url}/{BOT_TOKEN}"
+        )
+    else:
+        logger.info("Running with Polling (WEBHOOK_URL not set).")
+        application.run_polling(poll_interval=3)
 
 if __name__ == "__main__":
     main()
-
