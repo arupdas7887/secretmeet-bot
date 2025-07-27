@@ -3,7 +3,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta
 import os
-import json # Added for parsing JSON from environment variable
+import json
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.constants import ChatAction
@@ -19,20 +19,24 @@ from telegram.ext import (
 )
 
 # --- Firestore Imports ---
-# Use firebase_admin for authentication, then google.cloud.firestore for client
 import firebase_admin
 from firebase_admin import credentials
 import google.cloud.firestore
-from google.cloud.firestore import FieldFilter # For querying
+from google.cloud.firestore import FieldFilter
 
 # --- Configuration ---
-BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk" # IMPORTANT: Your Bot Token
+BOT_TOKEN = "7673817380:AAH8NkM1A3kJzB9HVdWBlrkTIaMBeol6Nyk" # IMPORTANT: Confirm this is your actual Bot Token
 ADMIN_USER_ID = 5246076255 # IMPORTANT: Replace with your actual Telegram User ID!
+
+# --- Enable logging (MOVED TO HERE) ---
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # --- Firestore Setup ---
 # Initialize Firebase Admin SDK
-# This handles both Render deployment (via env var) and local testing (via file)
-db = None # Will be initialized after app build or directly
+db = None # Will be initialized
 if not firebase_admin._apps:
     try:
         if os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON"):
@@ -47,7 +51,7 @@ if not firebase_admin._apps:
             raise Exception("Firebase credentials not found. Set GOOGLE_APPLICATION_CREDENTIALS_JSON env var or place 'service-account-key.json' file.")
 
         firebase_admin.initialize_app(cred)
-        db = google.cloud.firestore.Client() # Use google.cloud.firestore.Client() after firebase_admin init
+        db = google.cloud.firestore.Client()
         logger.info("Firestore client initialized successfully.")
     except Exception as e:
         logger.error(f"Failed to initialize Firestore: {e}")
@@ -60,11 +64,6 @@ users_collection = db.collection('users') if db else None
 # IMPORTANT: This is NOT persistent across bot restarts. For persistence, move to Firestore.
 blocked_users = {}
 
-# Enable logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
 
 # Conversation states
 FEEDBACK_MESSAGE = 1
@@ -777,7 +776,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # This function will run periodically to find and connect users.
 # You will add this to application.job_queue.
 
-async def matching_scheduler_function(context: CallbackContext):
+async def matching_scheduler_function(context: ContextTypes.DEFAULT_TYPE): # Corrected type hint for context
     logger.info("Running matching scheduler...")
     
     # Get all users who are currently in search
