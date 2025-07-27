@@ -1,4 +1,4 @@
-python-telegram-bot [webhooks, job-queue] = =21.11.1
+python-telegram-bot [webhooks, job-queue] ==21.11.1
 psycopg2-binary==2.9.5
 asyncpg==0.30.0
 firebase-admin
